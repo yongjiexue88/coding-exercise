@@ -50,7 +50,7 @@ async def run_evaluation(top_k: int = 3) -> dict:
         start_time = time.time()
 
         # Embed & retrieve
-        query_embedding = embedding_service.embed_text(query)
+        query_embedding = embedding_service.embed_query(query)
         search_results = vector_store.search(query_embedding, top_k=top_k)
 
         retrieved_sources = []

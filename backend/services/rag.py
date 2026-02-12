@@ -27,7 +27,7 @@ class RAGService:
         start_time = time.time()
 
         # Step 1: Embed the query
-        query_embedding = self.embedding_service.embed_text(query)
+        query_embedding = self.embedding_service.embed_query(query)
 
         # Step 2: Retrieve relevant documents
         results = self.vector_store.search(query_embedding, top_k=top_k)
@@ -55,7 +55,7 @@ class RAGService:
             Tuple of (text_stream, sources, model_name).
         """
         # Step 1: Embed the query
-        query_embedding = self.embedding_service.embed_text(query)
+        query_embedding = self.embedding_service.embed_query(query)
 
         # Step 2: Retrieve relevant documents
         results = self.vector_store.search(query_embedding, top_k=top_k)
