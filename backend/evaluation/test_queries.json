@@ -1,0 +1,119 @@
+[
+    {
+        "query": "How do I ask a good question on Stack Overflow?",
+        "expected_source": "stackoverflow_survival.md",
+        "expected_keywords": [
+            "minimal reproducible example",
+            "title",
+            "search"
+        ]
+    },
+    {
+        "query": "What are the different ways to center a div in CSS?",
+        "expected_source": "css_centering_saga.md",
+        "expected_keywords": [
+            "flexbox",
+            "grid",
+            "place-items",
+            "margin"
+        ]
+    },
+    {
+        "query": "Why does adding two empty arrays in JavaScript give an empty string?",
+        "expected_source": "javascript_wat.md",
+        "expected_keywords": [
+            "type coercion",
+            "string",
+            "converts"
+        ]
+    },
+    {
+        "query": "How do I resolve a git merge conflict?",
+        "expected_source": "git_merge_horror.md",
+        "expected_keywords": [
+            "merge tool",
+            "test",
+            "abort",
+            "checkout"
+        ]
+    },
+    {
+        "query": "What are some tips for naming variables?",
+        "expected_source": "naming_things.md",
+        "expected_keywords": [
+            "domain language",
+            "consistent",
+            "boolean",
+            "readable"
+        ]
+    },
+    {
+        "query": "Is it safe to deploy on Friday?",
+        "expected_source": "prod_friday_deploy.md",
+        "expected_keywords": [
+            "Murphy",
+            "rollback",
+            "feature flags",
+            "on-call"
+        ]
+    },
+    {
+        "query": "What is NaN in JavaScript and why is it weird?",
+        "expected_source": "javascript_wat.md",
+        "expected_keywords": [
+            "NaN",
+            "not equal to itself",
+            "Number.isNaN"
+        ]
+    },
+    {
+        "query": "What was the table era of CSS?",
+        "expected_source": "css_centering_saga.md",
+        "expected_keywords": [
+            "table",
+            "semantic",
+            "1997",
+            "turducken"
+        ]
+    },
+    {
+        "query": "How does Stack Overflow reputation work?",
+        "expected_source": "stackoverflow_survival.md",
+        "expected_keywords": [
+            "upvoted",
+            "accepted",
+            "points",
+            "reputation"
+        ]
+    },
+    {
+        "query": "What are boolean naming anti-patterns?",
+        "expected_source": "naming_things.md",
+        "expected_keywords": [
+            "is_",
+            "has_",
+            "should_",
+            "flag"
+        ]
+    },
+    {
+        "query": "What happens when you rebase a very old branch?",
+        "expected_source": "git_merge_horror.md",
+        "expected_keywords": [
+            "nuclear",
+            "rebase",
+            "abort",
+            "conflicts"
+        ]
+    },
+    {
+        "query": "What is the quick fix cascade problem when deploying?",
+        "expected_source": "prod_friday_deploy.md",
+        "expected_keywords": [
+            "quick fix",
+            "rollback",
+            "migration",
+            "cascade"
+        ]
+    }
+]
