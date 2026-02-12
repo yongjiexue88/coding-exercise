@@ -12,6 +12,7 @@ venv/
 # Environment
 .env
 backend/.env
+**/gcp-sa-key.json
 
 # ChromaDB
 chroma_db/

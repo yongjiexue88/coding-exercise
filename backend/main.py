@@ -30,6 +30,15 @@ async def lifespan(app: FastAPI):
     """Initialize services on startup."""
     global rag_service
     rag_service = RAGService()
+    
+    # Check if vector store is empty (typical for fresh Cloud Run instance)
+    if rag_service.vector_store.get_document_count() == 0:
+        print("🚀 Startup: Vector store is empty. Ingesting documents...")
+        ingest(reset=True)
+        # Re-initialize vector store to catch the new data
+        rag_service.vector_store = rag_service.vector_store.__class__()
+        print(f"✅ Startup: Ingestion complete. {rag_service.vector_store.get_document_count()} documents indexed.")
+    
     yield
 
 
