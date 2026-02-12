@@ -11,3 +11,8 @@ chroma_db
 htmlcov
 .DS_Store
 .env
+tests/
+*.md
+evaluation_results.json
+gcp-sa-key.json
+deploy.sh

@@ -32,14 +32,25 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build and Push Container
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker --quiet
+
+      - name: Pull previous image for cache
+        run: docker pull gcr.io/$PROJECT_ID/$SERVICE_NAME:latest || true
+
+      - name: Build with cache
         run: |
-          gcloud builds submit --tag gcr.io/$PROJECT_ID/$SERVICE_NAME .
+          docker build \
+            --cache-from gcr.io/$PROJECT_ID/$SERVICE_NAME:latest \
+            -t gcr.io/$PROJECT_ID/$SERVICE_NAME:latest .
+
+      - name: Push image
+        run: docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:latest
 
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy $SERVICE_NAME \
-            --image gcr.io/$PROJECT_ID/$SERVICE_NAME \
+            --image gcr.io/$PROJECT_ID/$SERVICE_NAME:latest \
             --platform managed \
             --region $REGION \
             --allow-unauthenticated \
