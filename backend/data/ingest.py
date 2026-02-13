@@ -74,6 +74,14 @@ def ingest(reset: bool = True) -> dict:
     chunks = chunk_documents(documents)
     print(f"   Created {len(chunks)} chunks")
 
+    if not chunks:
+        print("⚠️ No chunks created. Skipping embedding generation.")
+        return {
+            "documents_processed": len(documents),
+            "chunks_created": 0,
+            "total_indexed": 0,
+        }
+
     print("🧠 Generating embeddings...")
     embedding_service = EmbeddingService()
     texts = [c["content"] for c in chunks]

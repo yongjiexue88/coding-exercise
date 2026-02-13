@@ -17,3 +17,5 @@ tests/
 evaluation_results.json
 gcp-sa-key.json
 deploy.sh
+.git
+.gitignore

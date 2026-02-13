@@ -2,7 +2,7 @@
 
 A full-stack RAG system that retrieves relevant documents from a vector database and generates grounded responses using Google Gemini. Features **SSE streaming**, a **React chat interface**, and a **built-in evaluation framework**.
 
-> Built with FastAPI, ChromaDB, Sentence-Transformers, and React.
+> Built with FastAPI, ChromaDB, Google Gemini, and React.
 
 ## Architecture
 
@@ -15,7 +15,7 @@ flowchart TB
 
     subgraph Backend["Backend (FastAPI)"]
         API["API Endpoints"]
-        EMB["Embedding Service<br/>all-MiniLM-L6-v2"]
+        EMB["Embedding Service<br/>Gemini Embedding"]
         VS["Vector Store<br/>ChromaDB"]
         LLM["LLM Service<br/>Gemini 2.0 Flash"]
         RAG["RAG Orchestrator"]
@@ -45,11 +45,12 @@ flowchart TB
 
 ### Key Features
 
-- 🔍 **Semantic search** — Sentence-transformer embeddings with ChromaDB vector store
+- 🔍 **Semantic search** — Gemini embeddings with ChromaDB vector store
 - ⚡ **Streaming** — Token-by-token SSE streaming for real-time responses
 - 📊 **Evaluation** — Built-in metrics framework (precision, recall, faithfulness)
 - 🎨 **Chat UI** — Dark-mode React frontend with source citations
 - 🐳 **Docker Compose** — One-command full-stack deployment
+- 🚀 **CI/CD** — Automated deploy to Cloud Run (backend) and Firebase Hosting (frontend)
 
 ---
 
@@ -106,18 +107,6 @@ npm run dev
 
 > **Note:** The frontend proxies API requests to `http://localhost:8000` automatically via Vite config.
 
-### Option 3: Ollama Only (No API Key Needed)
-
-```bash
-# Install Ollama: https://ollama.com
-ollama serve
-ollama pull llama3.2:3b
-
-# Start backend with Ollama
-cd backend
-LLM_PROVIDER=ollama uvicorn main:app --reload
-```
-
 ---
 
 ## API Endpoints
@@ -129,8 +118,6 @@ LLM_PROVIDER=ollama uvicorn main:app --reload
 | `POST` | `/query/stream` | RAG query (SSE streaming) |
 | `GET` | `/documents` | List indexed documents |
 | `POST` | `/ingest` | Ingest documents from disk |
-| `GET` | `/models` | List available LLM models |
-| `POST` | `/models/select` | Switch LLM provider |
 
 ### Example Query
 
@@ -171,23 +158,20 @@ Results are printed as a table and saved to `evaluation_results.json`.
 |-----------|-----------|
 | Backend | Python, FastAPI, Uvicorn |
 | Vector DB | ChromaDB (embedded, persistent) |
-| Embeddings | `all-MiniLM-L6-v2` (sentence-transformers) |
-| LLM (Cloud) | Google Gemini 2.0 Flash |
-| LLM (Local) | Ollama (llama3.2:3b) |
+| Embeddings | Gemini Embedding (`gemini-embedding-001`) |
+| LLM | Google Gemini 2.0 Flash |
 | Frontend | React 18, Vite |
-| Infra | Docker Compose, Nginx |
+| Infra | Docker Compose, Nginx, Cloud Run, Firebase Hosting |
 
 ## Design Decisions
 
 1. **ChromaDB over Pinecone/Weaviate** — Zero external dependencies, embedded mode is perfect for a take-home. Persistent storage means data survives restarts.
 
-2. **Sentence-Transformers over OpenAI embeddings** — Runs locally, free, no API key needed for the embedding step. `all-MiniLM-L6-v2` is small (80MB) but scores well on semantic similarity benchmarks.
+2. **Gemini Embeddings over sentence-transformers** — Eliminates the ~2 GB PyTorch dependency, keeping Docker images small. Uses `gemini-embedding-001` (3072-dim) via the same API key already needed for generation.
 
-3. **Dual LLM with toggle** — Gemini for quality (free tier), Ollama for fully offline/free operation. Toggle lets you compare responses from different models.
+3. **SSE over WebSockets** — Simpler to implement, works through proxies, and is the standard for LLM streaming (used by ChatGPT, Claude, etc.).
 
-4. **SSE over WebSockets** — Simpler to implement, works through proxies, and is the standard for LLM streaming (used by ChatGPT, Claude, etc.).
-
-5. **Custom evaluation over RAGAS** — Lightweight, no heavy dependencies, and more transparent. Each metric is <30 lines and easy to understand.
+4. **Custom evaluation over RAGAS** — Lightweight, no heavy dependencies, and more transparent. Each metric is <30 lines and easy to understand.
 
 ---
 
@@ -209,10 +193,14 @@ coding-exercise/
 │   ├── main.py                  # FastAPI endpoints (query, stream, ingest, health)
 │   ├── config.py                # Pydantic settings from .env
 │   ├── models.py                # Request/response schemas
-│   ├── Dockerfile               # Backend container
-│   ├── requirements.txt         # Python dependencies
+│   ├── Dockerfile               # Multi-stage backend container
+│   ├── deploy.sh                # Manual Cloud Run deploy script
+│   ├── requirements.txt         # Python dependencies (dev)
+│   ├── requirements-prod.txt    # Python dependencies (production)
+│   ├── .env.example             # Environment variable template
+│   ├── .dockerignore            # Docker build exclusions
 │   ├── services/
-│   │   ├── embedding.py         # Sentence-transformer embeddings (all-MiniLM-L6-v2)
+│   │   ├── embedding.py         # Gemini embedding service (gemini-embedding-001)
 │   │   ├── vector_store.py      # ChromaDB operations
 │   │   ├── llm.py               # Gemini LLM integration + streaming
 │   │   └── rag.py               # RAG pipeline orchestration
@@ -233,6 +221,8 @@ coding-exercise/
 │   ├── package.json             # Node dependencies
 │   ├── Dockerfile               # Multi-stage build (Vite → Nginx)
 │   ├── nginx.conf               # Nginx config for SPA + API proxy
+│   ├── firebase.json            # Firebase Hosting configuration
+│   ├── .firebaserc              # Firebase project binding
 │   └── src/
 │       ├── main.jsx             # React entry
 │       ├── App.jsx              # Main app + SSE streaming logic
@@ -241,9 +231,11 @@ coding-exercise/
 │           ├── ChatInterface.jsx   # Message list + empty state
 │           ├── Message.jsx         # Individual message rendering
 │           ├── QueryInput.jsx      # Auto-resizing textarea input
-│           ├── Sidebar.jsx         # Chat history sidebar
 │           └── SourceDocuments.jsx  # Retrieved sources panel
+├── .github/
+│   └── workflows/
+│       ├── deploy-backend.yml   # CI/CD: Backend → Cloud Run
+│       └── deploy-frontend.yml  # CI/CD: Frontend → Firebase Hosting
 ├── docker-compose.yml           # Backend + Frontend orchestration
 └── README.md
 ```
-

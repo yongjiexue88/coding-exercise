@@ -36,5 +36,3 @@ Thumbs.db
 # Evaluation output
 evaluation_results.json
 
-# Docker
-ollama_data/
