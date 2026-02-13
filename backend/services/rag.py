@@ -69,7 +69,7 @@ class RAGService:
         return stream, sources, model_name
 
     def _format_results(self, results: dict) -> list[dict]:
-        """Format ChromaDB results into context documents for the LLM."""
+        """Format retrieval results into context documents for the LLM."""
         docs = []
         if results["documents"] and results["documents"][0]:
             for i, doc in enumerate(results["documents"][0]):
@@ -81,7 +81,7 @@ class RAGService:
         return docs
 
     def _build_sources(self, results: dict) -> list[SourceDocument]:
-        """Build SourceDocument list from ChromaDB results."""
+        """Build SourceDocument list from retrieval results."""
         sources = []
         if results["documents"] and results["documents"][0]:
             for i, doc in enumerate(results["documents"][0]):

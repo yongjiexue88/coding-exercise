@@ -24,7 +24,7 @@ class VectorStoreService:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
             
             # Create table for document chunks
-            # Using 3072 dimensions to match Gemini embedding-001/text-embedding-004
+            # Use 768 dimensions to match EmbeddingService output_dimensionality.
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS document_chunks (
                     id SERIAL PRIMARY KEY,
@@ -76,7 +76,7 @@ class VectorStoreService:
     ) -> dict:
         """Search for similar documents using a query embedding.
 
-        Returns structure compatible with ChromaDB results for easy migration.
+        Returns retrieval results in the shape expected by RAGService.
         """
         with self.conn.cursor() as cur:
             # Using <=> operator for cosine distance (0 = identical, 1 = opposite)
@@ -92,7 +92,7 @@ class VectorStoreService:
             if not rows:
                 return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
 
-            # Unpack results to match ChromaDB format
+            # Keep a stable response format for downstream RAG processing.
             return {
                 "documents": [[r[0] for r in rows]],
                 "metadatas": [[r[2] for r in rows]],

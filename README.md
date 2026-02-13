@@ -2,7 +2,7 @@
 
 A full-stack RAG system that retrieves relevant documents from a vector database and generates grounded responses using Google Gemini. Features **SSE streaming**, a **React chat interface**, and a **built-in evaluation framework**.
 
-> Built with FastAPI, ChromaDB, Google Gemini, and React.
+> Built with FastAPI, Neon PostgreSQL (`pgvector`), Google Gemini, and React.
 
 ## Architecture
 
@@ -16,14 +16,14 @@ flowchart TB
     subgraph Backend["Backend (FastAPI)"]
         API["API Endpoints"]
         EMB["Embedding Service<br/>Gemini Embedding"]
-        VS["Vector Store<br/>ChromaDB"]
+        VS["Vector Store<br/>Neon pgvector"]
         LLM["LLM Service<br/>Gemini 2.0 Flash"]
         RAG["RAG Orchestrator"]
     end
 
     subgraph Data["Data Layer"]
         DOCS["Source Documents<br/>.md files"]
-        CHROMA[("ChromaDB<br/>Persistent Storage")]
+        NEON[("Neon PostgreSQL<br/>Relational + pgvector")]
     end
 
     UI -->|"User Query"| API
@@ -35,8 +35,8 @@ flowchart TB
     API -->|"Streaming Response"| SSE --> UI
 
     DOCS -->|"Ingest & Chunk"| EMB
-    EMB -->|"Store Embeddings"| CHROMA
-    VS <-->|"Search"| CHROMA
+    EMB -->|"Store Embeddings"| NEON
+    VS <-->|"Search"| NEON
 
     style Frontend fill:#1a1a2e,stroke:#8b5cf6,color:#fff
     style Backend fill:#16213e,stroke:#3b82f6,color:#fff
@@ -45,7 +45,7 @@ flowchart TB
 
 ### Key Features
 
-- 🔍 **Semantic search** — Gemini embeddings with ChromaDB vector store
+- 🔍 **Semantic search** — Gemini embeddings with Neon PostgreSQL (`pgvector`)
 - ⚡ **Streaming** — Token-by-token SSE streaming for real-time responses
 - 📊 **Evaluation** — Built-in metrics framework (precision, recall, faithfulness)
 - 🎨 **Chat UI** — Dark-mode React frontend with source citations
@@ -88,7 +88,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and set GEMINI_API_KEY=your-key-here
 
-# Ingest the source documents into ChromaDB
+# Ingest the source documents into Neon PostgreSQL (pgvector)
 python -m data.ingest
 
 # Start the backend server
@@ -157,7 +157,7 @@ Results are printed as a table and saved to `evaluation_results.json`.
 | Component | Technology |
 |-----------|-----------|
 | Backend | Python, FastAPI, Uvicorn |
-| Vector DB | ChromaDB (embedded, persistent) |
+| Vector DB | Neon PostgreSQL + `pgvector` |
 | Embeddings | Gemini Embedding (`gemini-embedding-001`) |
 | LLM | Google Gemini 2.0 Flash |
 | Frontend | React 18, Vite |
@@ -165,9 +165,9 @@ Results are printed as a table and saved to `evaluation_results.json`.
 
 ## Design Decisions
 
-1. **ChromaDB over Pinecone/Weaviate** — Zero external dependencies, embedded mode is perfect for a take-home. Persistent storage means data survives restarts.
+1. **Neon PostgreSQL + pgvector as a unified store** — One managed database for both relational data and vector search, simplifying deployment and operations.
 
-2. **Gemini Embeddings over sentence-transformers** — Eliminates the ~2 GB PyTorch dependency, keeping Docker images small. Uses `gemini-embedding-001` (3072-dim) via the same API key already needed for generation.
+2. **Gemini Embeddings over sentence-transformers** — Eliminates the ~2 GB PyTorch dependency, keeping Docker images small. Uses `gemini-embedding-001` with `output_dimensionality=768` via the same API key already needed for generation.
 
 3. **SSE over WebSockets** — Simpler to implement, works through proxies, and is the standard for LLM streaming (used by ChatGPT, Claude, etc.).
 
@@ -201,7 +201,7 @@ coding-exercise/
 │   ├── .dockerignore            # Docker build exclusions
 │   ├── services/
 │   │   ├── embedding.py         # Gemini embedding service (gemini-embedding-001)
-│   │   ├── vector_store.py      # ChromaDB operations
+│   │   ├── vector_store.py      # Neon PostgreSQL pgvector operations
 │   │   ├── llm.py               # Gemini LLM integration + streaming
 │   │   └── rag.py               # RAG pipeline orchestration
 │   ├── data/

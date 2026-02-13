@@ -7,7 +7,7 @@ from config import settings
 
 
 class EmbeddingService:
-    """Service for generating text embeddings using Gemini text-embedding-004."""
+    """Service for generating text embeddings using Gemini gemini-embedding-001."""
 
     def __init__(self):
         if settings.gemini_api_key:

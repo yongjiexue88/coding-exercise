@@ -42,11 +42,11 @@ def verify():
 
     # Neon Vector Counts
     vs = VectorStoreService()
-    chroma_count = vs.get_document_count()
+    vector_count = vs.get_document_count()
     logger.info(f"📊 Neon Vector Stats:")
-    logger.info(f"   Vectors: {chroma_count}")
+    logger.info(f"   Vectors: {vector_count}")
     
-    if chroma_count == 0:
+    if vector_count == 0:
         logger.error("❌ No vectors found in Neon!")
     else:
         logger.info("✅ Verification Complete!")
