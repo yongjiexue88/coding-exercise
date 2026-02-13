@@ -2,7 +2,7 @@ import { useState } from 'react'
 import ChatInterface from './components/ChatInterface'
 import QueryInput from './components/QueryInput'
 
-const API_BASE = import.meta.env.PROD ? '' : 'http://localhost:8000'
+const API_BASE = import.meta.env.PROD ? 'https://rag-backend-963140776209.us-central1.run.app' : 'http://localhost:8000'
 
 const SUGGESTIONS = [
     'Summarize the key points from the retrieved documents in 5 bullets.',
