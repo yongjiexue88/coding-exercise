@@ -5,10 +5,10 @@ import QueryInput from './components/QueryInput'
 const API_BASE = import.meta.env.PROD ? 'https://rag-backend-963140776209.us-central1.run.app' : 'http://localhost:8000'
 
 const SUGGESTIONS = [
-    'Summarize the key points from the retrieved documents in 5 bullets.',
-    'Answer only from my knowledge base and cite the most relevant source.',
-    'What are the setup prerequisites mentioned across the docs?',
-    'Find conflicting guidance in the retrieved context and explain the difference.',
+    'Who won Super Bowl 50?',
+    'When did Nikola Tesla die?',
+    'What is the capital of Kenya?',
+    'What group bought Cyprus after the Norman conquest?',
 ]
 
 export default function App() {

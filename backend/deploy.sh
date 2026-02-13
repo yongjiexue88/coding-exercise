@@ -44,7 +44,7 @@ gcloud run deploy $SERVICE_NAME \
     --cpu 1 \
     --max-instances 1 \
     --concurrency 80 \
-    --set-env-vars "GEMINI_MODEL=gemini-2.0-flash,CHROMA_PERSIST_DIR=/tmp/chroma_db,GEMINI_API_KEY=$GEMINI_API_KEY"
+    --set-env-vars "GEMINI_MODEL=gemini-2.0-flash,GEMINI_API_KEY=$GEMINI_API_KEY,DATABASE_URL=$DATABASE_URL"
 
 echo "Please set your GEMINI_API_KEY manually if not set, or use:"
 echo "gcloud run services update $SERVICE_NAME --set-env-vars GEMINI_API_KEY=[YOUR_KEY]"

@@ -13,9 +13,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
 
-    # ChromaDB Configuration — /tmp is the only writable dir in Cloud Run
-    chroma_persist_dir: str = "/tmp/chroma_db"
-    collection_name: str = "tech_articles"
+    # Database Configuration
+    database_url: str = ""
 
     # RAG Configuration
     top_k: int = 3

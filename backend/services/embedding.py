@@ -13,7 +13,7 @@ class EmbeddingService:
         if settings.gemini_api_key:
             genai.configure(api_key=settings.gemini_api_key)
         self.model_name = "models/gemini-embedding-001"
-        self.dimension = 3072
+        self.dimension = 768
 
     def embed_text(self, text: str) -> list[float]:
         """Generate embedding for a single text string."""
@@ -21,6 +21,7 @@ class EmbeddingService:
             model=self.model_name,
             content=text,
             task_type="retrieval_document",
+            output_dimensionality=self.dimension,
         )
         return result["embedding"]
 
@@ -30,6 +31,7 @@ class EmbeddingService:
             model=self.model_name,
             content=text,
             task_type="retrieval_query",
+            output_dimensionality=self.dimension,
         )
         return result["embedding"]
 
@@ -39,5 +41,6 @@ class EmbeddingService:
             model=self.model_name,
             content=texts,
             task_type="retrieval_document",
+            output_dimensionality=self.dimension,
         )
         return result["embedding"]

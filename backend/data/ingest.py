@@ -88,7 +88,7 @@ def ingest(reset: bool = True) -> dict:
     embeddings = embedding_service.embed_batch(texts)
     print(f"   Generated {len(embeddings)} embeddings (dim={embedding_service.dimension})")
 
-    print("💾 Storing in ChromaDB...")
+    print("💾 Storing in Neon PostgreSQL...")
     vector_store = VectorStoreService()
     if reset:
         vector_store.reset()
@@ -101,7 +101,7 @@ def ingest(reset: bool = True) -> dict:
     )
 
     total = vector_store.get_document_count()
-    print(f"✅ Done! {total} chunks indexed in ChromaDB")
+    print(f"✅ Done! {total} chunks indexed in Neon PostgreSQL")
 
     return {
         "documents_processed": len(documents),
