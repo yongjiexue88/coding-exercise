@@ -154,7 +154,7 @@ export default function App() {
                             const last = updated[updated.length - 1]
                             const sources = event.sources || []
                             const qualitySummary = event.quality_summary || {
-                                    verification: sources.length > 0 ? 'verified' : 'limited_evidence',
+                                    verification: sources.length > 0 ? 'verified' : 'none',
                                     sources_used: sources.length,
                                 }
                             const progressSteps = sawStatusEvent

@@ -42,6 +42,20 @@ class EmptyVectorStoreService(FakeVectorStoreService):
         return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
 
 
+class WeakEvidenceVectorStoreService(FakeVectorStoreService):
+    def search(self, query_embedding: list[float], top_k: int = 3) -> dict:
+        self.search_calls += 1
+        return {
+            "documents": [[
+                "Victorian farms produce nearly 90% of Australian pears and a third of apples.",
+            ]],
+            "metadatas": [[
+                {"source": "SQuAD-small.json"},
+            ]],
+            "distances": [[0.68]],
+        }
+
+
 class FakeLLMService:
     def __init__(
         self,
@@ -69,6 +83,7 @@ class FakeLLMService:
         ]
         self.answers = answers or ["Python is used for backend APIs (python.md)."]
         self.generate_calls = 0
+        self.last_generation_mode = None
 
     @property
     def current_model_name(self) -> str:
@@ -123,9 +138,12 @@ class FakeLLMService:
         context_docs: list[dict],
         route: str = "rag_simple",
         feedback: list[str] | None = None,
+        generation_mode: str = "grounded",
+        runtime_facts: dict | None = None,
     ) -> str:
         answer = self.answers[min(self.generate_calls, len(self.answers) - 1)]
         self.generate_calls += 1
+        self.last_generation_mode = generation_mode
         return answer
 
     async def validate_answer(
@@ -216,7 +234,7 @@ async def test_query_unsafe_route_uses_fail_safe_and_skips_search():
 
 
 @pytest.mark.asyncio
-async def test_query_stream_uses_same_validation_contract_as_query():
+async def test_query_stream_falls_back_to_general_llm_when_validation_exhausted():
     llm = FakeLLMService(
         answers=["Unvalidated draft answer"],
         validation_outputs=[
@@ -250,14 +268,15 @@ async def test_query_stream_uses_same_validation_contract_as_query():
         chunks.append(chunk)
     streamed_text = "".join(chunks)
 
-    assert "couldn't validate the answer" in streamed_text.lower()
-    assert len(sources) == 2
+    assert "unvalidated draft answer" in streamed_text.lower()
+    assert sources == []
     assert model == "gemini/fake-model"
     assert query_time_ms > 0
+    assert llm.last_generation_mode == "general"
 
 
 @pytest.mark.asyncio
-async def test_query_no_evidence_replans_then_fails_safe_without_writer():
+async def test_query_no_evidence_falls_back_to_general_llm():
     llm = FakeLLMService()
     vector_store = EmptyVectorStoreService()
     rag = RAGService(
@@ -268,10 +287,29 @@ async def test_query_no_evidence_replans_then_fails_safe_without_writer():
 
     result = await rag.query("Explain FastAPI", top_k=2)
 
-    assert "could not find enough grounded evidence" in result["answer"].lower()
+    assert result["answer"]
     assert result["sources"] == []
     assert vector_store.search_calls == 2
-    assert llm.generate_calls == 0
+    assert llm.generate_calls == 1
+    assert llm.last_generation_mode == "general"
+
+
+@pytest.mark.asyncio
+async def test_query_weak_retrieval_is_gated_and_falls_back_to_general_llm():
+    llm = FakeLLMService(answers=["An apple is a fruit."])
+    vector_store = WeakEvidenceVectorStoreService()
+    rag = RAGService(
+        embedding_service=FakeEmbeddingService(),
+        vector_store=vector_store,
+        llm_service=llm,
+    )
+
+    result = await rag.query("what is an apple", top_k=3)
+
+    assert result["answer"]
+    assert result["sources"] == []
+    assert vector_store.search_calls == 2
+    assert llm.last_generation_mode == "general"
 
 
 @pytest.mark.asyncio
@@ -377,10 +415,81 @@ async def test_query_stream_emits_failed_retrieval_progress_on_no_evidence():
     assert final_state_by_step == {
         "understand": "completed",
         "retrieve": "failed",
-        "draft": "skipped",
-        "verify": "skipped",
+        "draft": "completed",
+        "verify": "completed",
         "finalize": "completed",
     }
+
+
+@pytest.mark.asyncio
+async def test_query_direct_route_still_attempts_retrieval_before_answer():
+    vector_store = FakeVectorStoreService()
+    llm = FakeLLMService(
+        route_output={
+            "route": "direct",
+            "needs_planner": False,
+            "needs_agents": False,
+            "validation_level": "basic",
+            "confidence": 0.98,
+            "reason": "simple question",
+        },
+        validation_outputs=[
+            {
+                "relevance": 0.25,
+                "groundedness": 0.2,
+                "completeness": 0.25,
+                "safety": "pass",
+                "decision": "replan",
+                "feedback": ["Insufficient grounding."],
+            },
+            {
+                "relevance": 0.25,
+                "groundedness": 0.2,
+                "completeness": 0.25,
+                "safety": "pass",
+                "decision": "replan",
+                "feedback": ["Still insufficient grounding."],
+            },
+        ],
+    )
+    rag = RAGService(
+        embedding_service=FakeEmbeddingService(),
+        vector_store=vector_store,
+        llm_service=llm,
+    )
+
+    result = await rag.query("What is FastAPI?", top_k=2)
+
+    assert result["answer"]
+    assert vector_store.search_calls > 0
+    assert llm.last_generation_mode == "general"
+
+
+@pytest.mark.asyncio
+async def test_query_validator_fail_safe_still_falls_back_to_general_llm():
+    llm = FakeLLMService(
+        validation_outputs=[
+            {
+                "relevance": 0.2,
+                "groundedness": 0.1,
+                "completeness": 0.2,
+                "safety": "pass",
+                "decision": "fail_safe",
+                "feedback": ["Unsafe to proceed with grounded answer."],
+            }
+        ]
+    )
+    rag = RAGService(
+        embedding_service=FakeEmbeddingService(),
+        vector_store=FakeVectorStoreService(),
+        llm_service=llm,
+    )
+
+    result = await rag.query("what is the capital of china", top_k=2)
+
+    assert result["answer"]
+    assert result["sources"] == []
+    assert llm.last_generation_mode == "general"
 
 
 def test_fail_safe_rate_limit_detection_is_not_triggered_by_column_number():

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, ValidationError
 from config import settings
 
 
-SYSTEM_PROMPT = """You are a helpful AI assistant that answers questions based on provided context documents.
+GROUNDED_SYSTEM_PROMPT = """You are a helpful AI assistant that answers questions based on provided context documents.
 
 Rules:
 1. Use only provided context for factual claims.
@@ -20,6 +20,16 @@ Rules:
 3. Keep answers concise but complete.
 4. Mention source document names for major claims when available.
 5. Never fabricate citations or facts.
+"""
+
+GENERAL_SYSTEM_PROMPT = """You are a helpful AI assistant.
+
+Rules:
+1. You may answer using general model knowledge.
+2. If runtime facts are provided, treat them as authoritative for date/time-sensitive answers.
+3. Never fabricate citations or claim retrieved evidence when none is provided.
+4. Be transparent about uncertainty when you are not confident.
+5. Keep answers concise but complete.
 """
 
 
@@ -157,6 +167,8 @@ def _build_prompt(
     context_docs: list[dict],
     route: str = "rag_simple",
     feedback: list[str] | None = None,
+    generation_mode: Literal["grounded", "general"] = "grounded",
+    runtime_facts: dict[str, Any] | None = None,
 ) -> str:
     """Build answer prompt with retrieval context and optional validator feedback."""
     context_parts: list[str] = []
@@ -170,14 +182,28 @@ def _build_prompt(
     if feedback:
         feedback_block = "\nValidator feedback to address:\n" + "\n".join(f"- {item}" for item in feedback)
 
+    runtime_facts_block = ""
+    if runtime_facts:
+        facts_lines = [f"- {key}: {value}" for key, value in runtime_facts.items()]
+        runtime_facts_block = "\nRuntime Facts:\n" + "\n".join(facts_lines)
+
+    objective = "Generate the best possible grounded answer for the user."
+    if generation_mode == "general":
+        objective = (
+            "Generate the best possible answer for the user using general knowledge and any runtime facts. "
+            "Do not imply document-grounded citations unless evidence is provided."
+        )
+
     return f"""Execution Route: {route}
+Generation Mode: {generation_mode}
 
 Context Documents:
 {context_text}
+{runtime_facts_block}
 
 User Question: {query}{feedback_block}
 
-Generate the best possible grounded answer for the user."""
+{objective}"""
 
 
 class LLMService:
@@ -197,6 +223,8 @@ class LLMService:
         context_docs: list[dict],
         route: str = "rag_simple",
         feedback: list[str] | None = None,
+        generation_mode: Literal["grounded", "general"] = "grounded",
+        runtime_facts: dict[str, Any] | None = None,
     ) -> str:
         """Generate a complete response (non-streaming)."""
         text, _ = await self.generate_with_metadata(
@@ -204,6 +232,8 @@ class LLMService:
             context_docs=context_docs,
             route=route,
             feedback=feedback,
+            generation_mode=generation_mode,
+            runtime_facts=runtime_facts,
         )
         return text
 
@@ -213,11 +243,25 @@ class LLMService:
         context_docs: list[dict],
         route: str = "rag_simple",
         feedback: list[str] | None = None,
+        generation_mode: Literal["grounded", "general"] = "grounded",
+        runtime_facts: dict[str, Any] | None = None,
         model_name: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Generate answer text and return usage/latency metadata."""
-        prompt = _build_prompt(query, context_docs, route=route, feedback=feedback)
-        model = self._build_model(system_instruction=SYSTEM_PROMPT, model_name=model_name)
+        prompt = _build_prompt(
+            query,
+            context_docs,
+            route=route,
+            feedback=feedback,
+            generation_mode=generation_mode,
+            runtime_facts=runtime_facts,
+        )
+        system_prompt = (
+            GROUNDED_SYSTEM_PROMPT
+            if generation_mode == "grounded"
+            else GENERAL_SYSTEM_PROMPT
+        )
+        model = self._build_model(system_instruction=system_prompt, model_name=model_name)
 
         started = time.time()
         response = model.generate_content(prompt)
@@ -235,10 +279,24 @@ class LLMService:
         context_docs: list[dict],
         route: str = "rag_simple",
         feedback: list[str] | None = None,
+        generation_mode: Literal["grounded", "general"] = "grounded",
+        runtime_facts: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         """Generate a streaming response, yielding text chunks."""
-        prompt = _build_prompt(query, context_docs, route=route, feedback=feedback)
-        model = self._build_model(system_instruction=SYSTEM_PROMPT)
+        prompt = _build_prompt(
+            query,
+            context_docs,
+            route=route,
+            feedback=feedback,
+            generation_mode=generation_mode,
+            runtime_facts=runtime_facts,
+        )
+        system_prompt = (
+            GROUNDED_SYSTEM_PROMPT
+            if generation_mode == "grounded"
+            else GENERAL_SYSTEM_PROMPT
+        )
+        model = self._build_model(system_instruction=system_prompt)
         response = model.generate_content(prompt, stream=True)
         for chunk in response:
             if chunk.text:

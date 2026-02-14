@@ -14,6 +14,7 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy import insert
 from sqlmodel import Session
 
+from config import settings
 from database import engine
 from evaluation.perf_metrics import CostCalculator
 from models import SourceDocument
@@ -55,6 +56,7 @@ class QueryState(TypedDict, total=False):
     cost_usd: float
     eval_flags: Dict[str, Any]
     error: Optional[str]
+    fallback_mode: Literal["none", "general_llm"]
     _progress_timeline: Dict[str, str]
     _progress_callback: Optional[ProgressCallback]
 
@@ -290,7 +292,7 @@ class RAGService:
             await self._add_progress_update(
                 state, updates, "verify", "skipped", meta={"reason": "safety_policy"}
             )
-        elif route in {"direct", "clarify"}:
+        elif route in {"clarify"}:
             await self._add_progress_update(
                 state,
                 updates,
@@ -310,6 +312,7 @@ class RAGService:
                 "router_reason": route_result.get("reason", ""),
                 "needs_planner": bool(route_result.get("needs_planner", True)),
                 "needs_agents": bool(route_result.get("needs_agents", False)),
+                "allow_general_fallback": route != "unsafe",
             },
             "stage_latency_ms": self._append_stage_latency(
                 state, "query_router", (time.time() - started) * 1000
@@ -324,12 +327,15 @@ class RAGService:
         usage: dict[str, Any] = {}
         updates: dict[str, Any] = {}
         await self._add_progress_update(state, updates, "retrieve", "started")
+        planning_route = state.get("route", "rag_simple")
+        if planning_route == "direct":
+            planning_route = "rag_simple"
         try:
             if hasattr(self.llm_service, "build_plan_with_metadata"):
                 plan, usage = await self._call_structured_with_retry(
                     self.llm_service.build_plan_with_metadata,
                     query=state.get("query", ""),
-                    route=state.get("route", "rag_simple"),
+                    route=planning_route,
                     top_k=state.get("top_k", 3),
                     feedback=state.get("validator_feedback", []),
                 )
@@ -337,7 +343,7 @@ class RAGService:
                 plan = await self._call_structured_with_retry(
                     self.llm_service.build_plan,
                     query=state.get("query", ""),
-                    route=state.get("route", "rag_simple"),
+                    route=planning_route,
                     top_k=state.get("top_k", 3),
                     feedback=state.get("validator_feedback", []),
                 )
@@ -397,7 +403,7 @@ class RAGService:
     async def _tool_orchestrator(self, state: QueryState) -> Dict[str, Any]:
         if state.get("validator_decision") == "fail_safe":
             return {}
-        if state.get("route") in {"direct", "clarify"}:
+        if state.get("route") in {"clarify"}:
             updates: dict[str, Any] = {}
             await self._add_progress_update(state, updates, "retrieve", "skipped")
             return {**updates, "tool_results": [], "evidence": []}
@@ -491,12 +497,33 @@ class RAGService:
                         ),
                     }
 
-        if evidence and state.get("route") in {"rag_simple"}:
+        if evidence:
             evidence = self._rerank_evidence(state.get("query", ""), evidence)
+            evidence = self._filter_low_quality_evidence(evidence)
 
         if not evidence:
             retries_used = int(state.get("retries_used", 0))
             if retries_used >= self.MAX_RETRIES:
+                if self._should_use_general_fallback(state):
+                    await self._add_progress_update(state, updates, "retrieve", "failed")
+                    return {
+                        **updates,
+                        "validator_decision": "pass",
+                        "validator_feedback": [],
+                        "tool_results": tool_results,
+                        "evidence": evidence,
+                        "fallback_mode": "general_llm",
+                        "eval_flags": self._merge_eval_flags(
+                            state,
+                            {
+                                "fallback_mode": "general_llm",
+                                "general_fallback_used": True,
+                            },
+                        ),
+                        "stage_latency_ms": self._append_stage_latency(
+                            state, "tool_orchestrator", (time.time() - started) * 1000
+                        ),
+                    }
                 await self._add_progress_update(state, updates, "retrieve", "failed")
                 await self._add_progress_update(state, updates, "draft", "skipped")
                 await self._add_progress_update(state, updates, "verify", "skipped")
@@ -550,6 +577,12 @@ class RAGService:
         await self._add_progress_update(state, updates, "draft", "started")
         context_docs = self._build_context_docs(state)
         feedback = state.get("validator_feedback", [])
+        fallback_mode = state.get("fallback_mode", "none")
+        generation_mode: Literal["grounded", "general"] = "grounded"
+        if fallback_mode == "general_llm" or (
+            state.get("route") == "direct" and not context_docs
+        ):
+            generation_mode = "general"
 
         usage: dict[str, Any] = {}
         try:
@@ -559,6 +592,7 @@ class RAGService:
                     context_docs=context_docs,
                     route=state.get("route", "rag_simple"),
                     feedback=feedback,
+                    generation_mode=generation_mode,
                 )
             else:
                 draft = await self.llm_service.generate(
@@ -566,6 +600,7 @@ class RAGService:
                     context_docs=context_docs,
                     route=state.get("route", "rag_simple"),
                     feedback=feedback,
+                    generation_mode=generation_mode,
                 )
         except Exception:
             await self._add_progress_update(state, updates, "draft", "failed")
@@ -578,6 +613,7 @@ class RAGService:
             "draft_answer": draft,
             "token_usage": token_usage,
             "cost_usd": cost_usd,
+            "eval_flags": self._merge_eval_flags(state, {"generation_mode": generation_mode}),
             "stage_latency_ms": self._append_stage_latency(state, "writer", (time.time() - started) * 1000),
         }
 
@@ -589,7 +625,10 @@ class RAGService:
         updates: dict[str, Any] = {}
         await self._add_progress_update(state, updates, "verify", "started")
         route = state.get("route", "rag_simple")
-        if route in {"direct", "clarify"}:
+        # Clarify and explicit general fallback skip grounded validation checks.
+        # Direct queries now still run validation so weakly-grounded results can
+        # trigger general fallback instead of surfacing "cannot answer from context".
+        if route in {"clarify"} or state.get("fallback_mode") == "general_llm":
             return {
                 **updates,
                 "validator_scores": {"relevance": 1.0, "groundedness": 1.0, "completeness": 1.0},
@@ -663,11 +702,38 @@ class RAGService:
         started = time.time()
         updates: dict[str, Any] = {}
         decision = state.get("validator_decision", "replan")
-        if decision in {"pass", "fail_safe"}:
-            if decision == "pass":
-                await self._add_progress_update(state, updates, "verify", "completed")
-            else:
+        if decision == "pass":
+            await self._add_progress_update(state, updates, "verify", "completed")
+            return {
+                **updates,
+                "stage_latency_ms": self._append_stage_latency(
+                    state, "decision_node", (time.time() - started) * 1000
+                )
+            }
+        if decision == "fail_safe":
+            if (
+                self._should_use_general_fallback(state)
+                and state.get("fallback_mode") != "general_llm"
+            ):
                 await self._add_progress_update(state, updates, "verify", "failed")
+                return {
+                    **updates,
+                    "validator_decision": "revise",
+                    "validator_feedback": [],
+                    "fallback_mode": "general_llm",
+                    "evidence": [],
+                    "eval_flags": self._merge_eval_flags(
+                        state,
+                        {
+                            "fallback_mode": "general_llm",
+                            "general_fallback_used": True,
+                        },
+                    ),
+                    "stage_latency_ms": self._append_stage_latency(
+                        state, "decision_node", (time.time() - started) * 1000
+                    ),
+                }
+            await self._add_progress_update(state, updates, "verify", "failed")
             return {
                 **updates,
                 "stage_latency_ms": self._append_stage_latency(
@@ -677,6 +743,28 @@ class RAGService:
 
         retries_used = state.get("retries_used", 0)
         if retries_used >= self.MAX_RETRIES:
+            if (
+                self._should_use_general_fallback(state)
+                and state.get("fallback_mode") != "general_llm"
+            ):
+                await self._add_progress_update(state, updates, "verify", "failed")
+                return {
+                    **updates,
+                    "validator_decision": "revise",
+                    "validator_feedback": [],
+                    "fallback_mode": "general_llm",
+                    "evidence": [],
+                    "eval_flags": self._merge_eval_flags(
+                        state,
+                        {
+                            "fallback_mode": "general_llm",
+                            "general_fallback_used": True,
+                        },
+                    ),
+                    "stage_latency_ms": self._append_stage_latency(
+                        state, "decision_node", (time.time() - started) * 1000
+                    ),
+                }
             await self._add_progress_update(state, updates, "verify", "failed")
             return {
                 **updates,
@@ -742,7 +830,7 @@ class RAGService:
     def _next_after_router(self, state: QueryState) -> Literal["planner", "writer", "finalize_response"]:
         if state.get("validator_decision") == "fail_safe" or state.get("route") == "unsafe":
             return "finalize_response"
-        if state.get("route") in {"direct", "clarify"}:
+        if state.get("route") in {"clarify"}:
             return "writer"
         return "planner"
 
@@ -841,6 +929,18 @@ class RAGService:
             return True
         return bool(re.search(r"(?:status(?:\\s*code)?|http)\\s*[:=]?\\s*429\\b", error_text))
 
+    def _should_use_general_fallback(self, state: QueryState) -> bool:
+        route = state.get("route", "rag_simple")
+        if route == "unsafe":
+            return False
+        user_context = state.get("user_context", {})
+        return bool(user_context.get("allow_general_fallback", True))
+
+    def _merge_eval_flags(self, state: QueryState, updates: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(state.get("eval_flags", {}))
+        merged.update(updates)
+        return merged
+
     def _new_state(self, query: str, top_k: int) -> QueryState:
         return {
             "trace_id": str(uuid4()),
@@ -857,6 +957,7 @@ class RAGService:
             "validator_scores": {},
             "validator_decision": "pass",
             "validator_feedback": [],
+            "fallback_mode": "none",
             "retries_used": 0,
             "token_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             "latency_ms": 0,
@@ -934,7 +1035,7 @@ class RAGService:
 
         _resolve("understand", "completed")
 
-        if route in {"unsafe", "direct", "clarify"}:
+        if route in {"unsafe", "clarify"}:
             _resolve("retrieve", "skipped")
         elif has_evidence:
             _resolve("retrieve", "completed")
@@ -1013,10 +1114,38 @@ class RAGService:
 
             semantic_score = float(item.get("relevance_score", 0.0))
             combined_score = (0.75 * semantic_score) + (0.25 * lexical_overlap)
-            ranked.append({**item, "relevance_score": round(combined_score, 4)})
+            ranked.append(
+                {
+                    **item,
+                    "relevance_score": round(combined_score, 4),
+                    "_semantic_score": round(semantic_score, 4),
+                    "_lexical_overlap": round(lexical_overlap, 4),
+                }
+            )
 
         ranked.sort(key=lambda x: x.get("relevance_score", 0.0), reverse=True)
         return ranked
+
+    def _filter_low_quality_evidence(self, evidence: list[dict]) -> list[dict]:
+        min_score = max(0.0, min(1.0, float(settings.rag_min_evidence_score)))
+        min_lexical_overlap = max(0.0, min(1.0, float(settings.rag_min_lexical_overlap)))
+        semantic_override = max(0.0, min(1.0, float(settings.rag_high_semantic_override)))
+        filtered: list[dict] = []
+
+        for item in evidence:
+            combined = float(item.get("relevance_score", 0.0))
+            lexical = float(item.get("_lexical_overlap", 0.0))
+            semantic = float(item.get("_semantic_score", 0.0))
+            if combined < min_score:
+                continue
+            if lexical < min_lexical_overlap and semantic < semantic_override:
+                continue
+            filtered.append(item)
+
+        return [
+            {key: value for key, value in item.items() if key not in {"_semantic_score", "_lexical_overlap"}}
+            for item in filtered
+        ]
 
     def _build_context_docs(self, state: QueryState) -> list[dict]:
         return [

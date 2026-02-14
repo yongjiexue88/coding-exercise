@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     top_k: int = 3
     chunk_size: int = 300
     chunk_overlap: int = 50
+    rag_min_evidence_score: float = 0.30
+    rag_min_lexical_overlap: float = 0.10
+    rag_high_semantic_override: float = 0.70
 
     # Evaluation / Observability
     eval_judge_model: str = "gemini-2.0-flash"

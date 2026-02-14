@@ -124,6 +124,61 @@ class TestQueryStreamEndpoint:
             "sources_used": 1,
         }
 
+    def test_query_stream_done_quality_summary_is_none_for_general_fallback(self, client, monkeypatch):
+        """Fallback answers without sources should return verification='none'."""
+        import main
+
+        class FakeSource:
+            def model_dump(self):
+                return {"content": "Doc content", "source": "doc.md", "relevance_score": 0.91}
+
+        class FakeVectorStore:
+            def get_document_count(self):
+                return 1
+
+        class FakeRAGService:
+            def __init__(self):
+                self.vector_store = FakeVectorStore()
+                self.last_observation = {
+                    "route": "rag_simple",
+                    "validator_decision": "pass",
+                    "eval_flags_json": {
+                        "fallback_mode": "general_llm",
+                        "generation_mode": "general",
+                    },
+                }
+
+            async def query_stream(self, query, top_k=3, progress_callback=None):
+                if progress_callback:
+                    await progress_callback(
+                        {
+                            "step": "understand",
+                            "state": "completed",
+                            "label": "Understanding question",
+                        }
+                    )
+
+                async def fake_stream():
+                    yield "General answer"
+
+                return fake_stream(), [FakeSource()], "gemini/fake-model", 10.0
+
+        monkeypatch.setattr(main, "rag_service", FakeRAGService())
+
+        response = client.post("/query/stream", json={"query": "what date is today", "top_k": 3})
+        assert response.status_code == 200
+
+        payloads = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        done_payload = payloads[-1]
+        assert done_payload["quality_summary"] == {
+            "verification": "none",
+            "sources_used": 1,
+        }
+
 
 class TestCorsBehavior:
     def test_unhandled_server_error_includes_cors_header(self):

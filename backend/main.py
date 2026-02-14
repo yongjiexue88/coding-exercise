@@ -97,11 +97,20 @@ VALIDATOR_DECISIONS = Counter(
 def _build_quality_summary(observation: dict[str, Any], sources_count: int) -> dict[str, Any]:
     route = str(observation.get("route", ""))
     decision = str(observation.get("validator_decision", ""))
+    eval_flags = observation.get("eval_flags_json", {})
+    if not isinstance(eval_flags, dict):
+        eval_flags = {}
+    fallback_mode = str(eval_flags.get("fallback_mode", ""))
+    generation_mode = str(eval_flags.get("generation_mode", ""))
 
     if route == "unsafe":
         verification = "safety_blocked"
+    elif fallback_mode == "general_llm" or generation_mode == "general":
+        verification = "none"
     elif decision == "pass" and sources_count > 0:
         verification = "verified"
+    elif decision == "pass" and sources_count == 0:
+        verification = "none"
     else:
         verification = "limited_evidence"
 

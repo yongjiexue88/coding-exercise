@@ -76,7 +76,15 @@ class FakeLLMService:
             },
         )
 
-    async def generate_with_metadata(self, query: str, context_docs, route="rag_simple", feedback=None):
+    async def generate_with_metadata(
+        self,
+        query: str,
+        context_docs,
+        route="rag_simple",
+        feedback=None,
+        generation_mode="grounded",
+        runtime_facts=None,
+    ):
         return (
             "Grounded answer (doc.md).",
             {

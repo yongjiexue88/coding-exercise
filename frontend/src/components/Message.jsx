@@ -2,6 +2,9 @@ import SourceDocuments from './SourceDocuments'
 
 function getTrustLine(summary) {
     if (!summary) return ''
+    if (summary.verification === 'none') {
+        return ''
+    }
     if (summary.verification === 'verified') {
         return 'Verified against retrieved sources'
     }
@@ -13,6 +16,7 @@ function getTrustLine(summary) {
 
 export default function Message({ message }) {
     const isUser = message.role === 'user'
+    const trustLine = getTrustLine(message.qualitySummary)
 
     return (
         <div className={`message-row ${isUser ? 'user-row' : 'assistant-row'}`}>
@@ -51,9 +55,9 @@ export default function Message({ message }) {
                         </div>
                     )}
 
-                    {!isUser && !message.isStreaming && message.qualitySummary && (
+                    {!isUser && !message.isStreaming && message.qualitySummary && trustLine && (
                         <div className={`trust-line trust-${message.qualitySummary.verification}`}>
-                            {getTrustLine(message.qualitySummary)}
+                            {trustLine}
                         </div>
                     )}
 
