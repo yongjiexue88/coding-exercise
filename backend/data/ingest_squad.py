@@ -19,7 +19,7 @@ from services.vector_store import VectorStoreService
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DATA_FILE = Path(__file__).parent / "documents" / "SQuAD-v1.1.json"
+DATA_FILE = Path(__file__).parent / "documents" / "SQuAD-small.json"
 
 def load_squad_data(file_path: Path) -> dict:
     """Load SQuAD JSON data."""

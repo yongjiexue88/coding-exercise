@@ -64,7 +64,7 @@ def test_get_all_sources_formats_rows(mock_session_cls, _mock_init):
     """Source listing should map SQL rows to API response format."""
     session = mock_session_cls.return_value.__enter__.return_value
     session.exec.return_value.fetchall.return_value = [
-        ("SQuAD-v1.1.json", 128),
+        ("SQuAD-small.json", 128),
         ("extra.json", 12),
     ]
 
@@ -72,6 +72,6 @@ def test_get_all_sources_formats_rows(mock_session_cls, _mock_init):
     sources = store.get_all_sources()
 
     assert sources == [
-        {"source": "SQuAD-v1.1.json", "chunk_count": 128},
+        {"source": "SQuAD-small.json", "chunk_count": 128},
         {"source": "extra.json", "chunk_count": 12},
     ]

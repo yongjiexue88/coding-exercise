@@ -73,7 +73,7 @@ flowchart TD
 ### Data Sources & Processing (Current Milestone)
 
 - **Status**: ✅ Completed for current scope
-- **Current source**: `backend/data/documents/SQuAD-v1.1.json`
+- **Current source**: `backend/data/documents/SQuAD-small.json`
 - **Processing flow**:
   1. Parse source file
   2. Split content into chunks
@@ -163,7 +163,11 @@ cp .env.example .env
 # Edit .env and set GEMINI_API_KEY + DATABASE_URL
 
 # Ingest the source documents into Neon PostgreSQL (pgvector)
-python -m data.ingest
+# Option A: Use the helper script (Recommended)
+python scripts/ingest.py
+
+# Option B: Use curl directly
+# curl -X POST http://localhost:8000/ingest
 
 # Start the backend server
 uvicorn main:app --reload

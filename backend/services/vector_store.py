@@ -93,7 +93,7 @@ class VectorStoreService:
                 JOIN corpus_state cs ON d.run_id = cs.active_run_id
                 WHERE cs.corpus_name = :corpus_name
             """)
-            return session.exec(stmt, params={"corpus_name": corpus_name}).one()
+            return session.exec(stmt, params={"corpus_name": corpus_name}).one()[0]
 
     def get_all_sources(self, corpus_name: str = "default") -> List[dict]:
         """Get a summary of all indexed sources in the active run."""
