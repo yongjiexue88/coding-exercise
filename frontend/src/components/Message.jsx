@@ -67,12 +67,6 @@ export default function Message({ message }) {
                         </div>
                     )}
 
-                    {!isUser && !message.isStreaming && message.model && (
-                        <div className="message-footer-meta">
-                            <span className="model-badge">{message.model}</span>
-                            {message.queryTime && <span className="time-badge">{Math.round(message.queryTime)}ms</span>}
-                        </div>
-                    )}
                 </div>
             </div>
         </div>

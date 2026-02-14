@@ -154,9 +154,9 @@ export default function App() {
                             const last = updated[updated.length - 1]
                             const sources = event.sources || []
                             const qualitySummary = event.quality_summary || {
-                                    verification: sources.length > 0 ? 'verified' : 'none',
-                                    sources_used: sources.length,
-                                }
+                                verification: sources.length > 0 ? 'verified' : 'none',
+                                sources_used: sources.length,
+                            }
                             const progressSteps = sawStatusEvent
                                 ? last.progressSteps
                                 : mergeProgressSteps(last.progressSteps, {
@@ -202,8 +202,8 @@ export default function App() {
         <div className="app-shell">
             <header className="topbar">
                 <div className="brand-block">
-                    <span className="brand-mark">A</span>
-                    <span className="brand-name">Assistant</span>
+                    <span className="brand-mark">C</span>
+                    <span className="brand-name">Chat</span>
                 </div>
 
                 <button
