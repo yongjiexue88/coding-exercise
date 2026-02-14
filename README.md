@@ -64,9 +64,9 @@ flowchart TD
 - [x] Data Processing (Completed)
 - [x] Database Layer (Completed)
 - [x] User Query (Guard implemented)
-- [ ] Reasoning Engine (plan + route + tools)
+- [x] Reasoning Engine (plan + route + tools)
 - [ ] Multi-Agent System
-- [ ] Database Retrieval (agentic retrieval loop)
+- [x] Database Retrieval (agentic retrieval loop)
 - [ ] Human Validation (optional)
 - [/] Evaluation Layer + feedback loop (Framework ready)
 
@@ -90,6 +90,40 @@ flowchart TD
   3. Keep explicit request bounds (`max_length=1000`, `top_k` range)
 - **Implementation**: `backend/services/query_guard.py` + `QueryRequest` validator in `backend/models.py`
 - **Scope note**: Rate limits, intent gating, and confidence thresholds are planned in later milestones.
+
+### Reasoning Engine (Current Milestone)
+
+- **Status**: ✅ Implemented (Phase 1)
+- **What is implemented now**:
+  1. **LangGraph state machine** with explicit nodes:
+     `ingest_query -> query_router -> planner -> tool_orchestrator -> writer -> validation_router -> decision_node -> finalize_response`
+  2. **Strict structured control nodes** (Router/Planner/Validator) with schema validation and retry on schema failures.
+  3. **Supported routes**: `direct`, `rag_simple`, `clarify`, `unsafe`.
+  4. **Supported tools**: `vector_search`, `rerank`.
+  5. **Validation loop**: `pass | revise | replan | fail_safe` with one retry and deterministic fail-safe fallback.
+  6. **Safety parity across endpoints**: `/query` and `/query/stream` both run the same validation contract before returning user-visible answers.
+- **Implementation**:
+  - `backend/services/rag.py`
+  - `backend/services/llm.py`
+  - `backend/services/vector_store.py`
+  - `backend/tests/test_rag_pipeline.py`
+- **Scope note**: Multi-agent routing and additional external tools are intentionally out of scope for this milestone.
+
+### Database Retrieval (Agentic Retrieval Loop)
+
+- **Status**: ✅ Implemented for current scope
+- **What is implemented now**:
+  1. **Planner-directed retrieval loop** executes `vector_search` and optional `rerank` steps from plan budgets.
+  2. **Evidence extraction and ranking** converts vector results into chunk-level evidence with relevance scores.
+  3. **Agentic replan behavior** triggers when retrieval returns no evidence and retries once before fail-safe.
+  4. **Circuit-breaker guard** fails safe when tool failure ratio exceeds threshold.
+  5. **Endpoint parity**: `/query` and `/query/stream` both use the same validated graph result before responding.
+- **Implementation**:
+  - `backend/services/rag.py`
+  - `backend/services/vector_store.py`
+  - `backend/tests/test_rag_pipeline.py`
+  - `backend/tests/test_vector_store.py`
+- **Scope note**: This covers the single-agent retrieval loop over the active corpus. Multi-agent retrieval coordination remains a separate milestone.
 
 ### Evaluation Layer & Feedback Loop (Current Milestone)
 

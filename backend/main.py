@@ -191,12 +191,12 @@ async def query_stream(request: QueryRequest):
     if rag_service.vector_store.get_document_count() == 0:
         raise HTTPException(status_code=400, detail="No documents indexed. Call POST /ingest first.")
 
-    stream, sources, model_name = await rag_service.query_stream(
+    stream, sources, model_name, precomputed_ms = await rag_service.query_stream(
         request.query, top_k=request.top_k
     )
 
     async def event_generator():
-        start_time = time.time()
+        stream_start = time.time()
         try:
             async for chunk in stream:
                 data = json.dumps({"type": "chunk", "content": chunk})
@@ -205,7 +205,8 @@ async def query_stream(request: QueryRequest):
             error_data = json.dumps({"type": "error", "content": str(e)})
             yield f"data: {error_data}\n\n"
 
-        elapsed_ms = round((time.time() - start_time) * 1000, 2)
+        stream_ms = (time.time() - stream_start) * 1000
+        elapsed_ms = round(precomputed_ms + stream_ms, 2)
         done_data = json.dumps({
             "type": "done",
             "sources": [s.model_dump() for s in sources],

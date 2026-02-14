@@ -120,8 +120,9 @@ async def test_query_observation_persisted(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def add(self, obj):
-            persisted.append(obj)
+        def exec(self, stmt):
+            persisted.append(stmt)
+            return None
 
         def commit(self):
             return None

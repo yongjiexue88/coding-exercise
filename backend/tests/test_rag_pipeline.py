@@ -36,6 +36,12 @@ class FakeVectorStoreService:
         }
 
 
+class EmptyVectorStoreService(FakeVectorStoreService):
+    def search(self, query_embedding: list[float], top_k: int = 3) -> dict:
+        self.search_calls += 1
+        return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+
 class FakeLLMService:
     def __init__(
         self,
@@ -207,3 +213,62 @@ async def test_query_unsafe_route_uses_fail_safe_and_skips_search():
     assert "can't help" in result["answer"].lower()
     assert result["sources"] == []
     assert vector_store.search_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_query_stream_uses_same_validation_contract_as_query():
+    llm = FakeLLMService(
+        answers=["Unvalidated draft answer"],
+        validation_outputs=[
+            {
+                "relevance": 0.3,
+                "groundedness": 0.2,
+                "completeness": 0.4,
+                "safety": "pass",
+                "decision": "replan",
+                "feedback": ["Need stronger grounding."],
+            },
+            {
+                "relevance": 0.35,
+                "groundedness": 0.25,
+                "completeness": 0.45,
+                "safety": "pass",
+                "decision": "replan",
+                "feedback": ["Still not grounded."],
+            },
+        ],
+    )
+    rag = RAGService(
+        embedding_service=FakeEmbeddingService(),
+        vector_store=FakeVectorStoreService(),
+        llm_service=llm,
+    )
+
+    stream, sources, model, query_time_ms = await rag.query_stream("Explain FastAPI", top_k=2)
+    chunks = []
+    async for chunk in stream:
+        chunks.append(chunk)
+    streamed_text = "".join(chunks)
+
+    assert "couldn't validate the answer" in streamed_text.lower()
+    assert len(sources) == 2
+    assert model == "gemini/fake-model"
+    assert query_time_ms > 0
+
+
+@pytest.mark.asyncio
+async def test_query_no_evidence_replans_then_fails_safe_without_writer():
+    llm = FakeLLMService()
+    vector_store = EmptyVectorStoreService()
+    rag = RAGService(
+        embedding_service=FakeEmbeddingService(),
+        vector_store=vector_store,
+        llm_service=llm,
+    )
+
+    result = await rag.query("Explain FastAPI", top_k=2)
+
+    assert "could not find enough grounded evidence" in result["answer"].lower()
+    assert result["sources"] == []
+    assert vector_store.search_calls == 2
+    assert llm.generate_calls == 0

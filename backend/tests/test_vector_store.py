@@ -31,8 +31,8 @@ def test_search_formats_result_shape(mock_session_cls, _mock_init):
     session = mock_session_cls.return_value.__enter__.return_value
     exec_result = MagicMock()
     exec_result.fetchall.return_value = [
-        ("content1", "doc1.json", {"title": "Doc1"}, 0.1),
-        ("content2", "doc2.json", None, 0.2),
+        ("chunk-1", 0, "content1", "doc1.json", {"title": "Doc1"}, 0.1),
+        ("chunk-2", 1, "content2", "doc2.json", None, 0.2),
     ]
     session.exec.return_value = exec_result
 
@@ -51,6 +51,19 @@ def test_get_document_count_from_active_run(mock_session_cls, _mock_init):
     """Count query should return scalar count for active corpus run."""
     session = mock_session_cls.return_value.__enter__.return_value
     session.exec.return_value.one.return_value = 42
+
+    store = VectorStoreService()
+    count = store.get_document_count()
+
+    assert count == 42
+
+
+@patch.object(VectorStoreService, "_ensure_extensions", return_value=None)
+@patch("services.vector_store.Session")
+def test_get_document_count_handles_tuple_row(mock_session_cls, _mock_init):
+    """Count query should also support DB drivers returning tuple rows."""
+    session = mock_session_cls.return_value.__enter__.return_value
+    session.exec.return_value.one.return_value = (42,)
 
     store = VectorStoreService()
     count = store.get_document_count()

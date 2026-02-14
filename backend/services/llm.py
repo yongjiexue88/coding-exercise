@@ -28,7 +28,7 @@ class StructuredOutputError(Exception):
 
 
 class RouterOutput(BaseModel):
-    route: Literal["direct", "rag_simple", "rag_multi_hop", "tool_heavy", "clarify", "unsafe"]
+    route: Literal["direct", "rag_simple", "clarify", "unsafe"]
     needs_planner: bool
     needs_agents: bool
     validation_level: Literal["basic", "strict"]
@@ -73,7 +73,7 @@ ROUTER_RESPONSE_SCHEMA = {
     "properties": {
         "route": {
             "type": "STRING",
-            "enum": ["direct", "rag_simple", "rag_multi_hop", "tool_heavy", "clarify", "unsafe"],
+            "enum": ["direct", "rag_simple", "clarify", "unsafe"],
         },
         "needs_planner": {"type": "BOOLEAN"},
         "needs_agents": {"type": "BOOLEAN"},

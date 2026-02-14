@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional, TypedDict
 from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
+from sqlalchemy import insert
 from sqlmodel import Session
 
 from database import engine
@@ -106,17 +108,7 @@ class RAGService:
 
     async def query(self, query: str, top_k: int = 3) -> dict:
         """Execute the full graph and return final answer with sources."""
-        start_time = time.time()
-        policy = self.policy_service.get_runtime_policy()
-        effective_top_k = max(top_k, policy.min_top_k)
-
-        initial_state = self._new_state(query=query, top_k=effective_top_k)
-        initial_state["eval_flags"] = policy.as_flags()
-
-        final_state = await self.graph.ainvoke(initial_state)
-
-        elapsed_ms = (time.time() - start_time) * 1000
-        final_state["latency_ms"] = round(elapsed_ms)
+        final_state, elapsed_ms = await self._run_graph(query=query, top_k=top_k)
 
         self._persist_query_observation(query=query, state=final_state, query_time_ms=elapsed_ms)
 
@@ -129,39 +121,15 @@ class RAGService:
 
     async def query_stream(
         self, query: str, top_k: int = 3
-    ) -> tuple[AsyncIterator[str], list[SourceDocument], str]:
-        """Run pre-write pipeline and return streaming writer output."""
-        policy = self.policy_service.get_runtime_policy()
-        state = self._new_state(query=query, top_k=max(top_k, policy.min_top_k))
-        state["eval_flags"] = policy.as_flags()
+    ) -> tuple[AsyncIterator[str], list[SourceDocument], str, float]:
+        """Run the same validated graph as /query and stream the final answer text."""
+        final_state, elapsed_ms = await self._run_graph(query=query, top_k=top_k)
+        self._persist_query_observation(query=query, state=final_state, query_time_ms=elapsed_ms)
 
-        state.update(await self._ingest_query(state))
-        state.update(await self._query_router(state))
         model_name = f"gemini/{self.llm_service.current_model_name}"
-
-        if state.get("validator_decision") == "fail_safe" or state.get("route") == "unsafe":
-            stream = self._single_chunk_stream(self._build_fail_safe_answer(state))
-            return stream, [], model_name
-
-        if state.get("route") not in {"direct", "clarify"}:
-            state.update(await self._planner(state))
-            if state.get("validator_decision") == "fail_safe":
-                stream = self._single_chunk_stream(self._build_fail_safe_answer(state))
-                return stream, [], model_name
-
-            state.update(await self._tool_orchestrator(state))
-            if state.get("validator_decision") == "fail_safe":
-                stream = self._single_chunk_stream(self._build_fail_safe_answer(state))
-                return stream, [], model_name
-
-        context_docs = self._build_context_docs(state)
-        sources = self._build_sources_from_state(state)
-        stream = self.llm_service.generate_stream(
-            state.get("query", query),
-            context_docs,
-            route=state.get("route", "rag_simple"),
-        )
-        return stream, sources, model_name
+        sources = self._build_sources_from_state(final_state)
+        stream = self._chunked_text_stream(final_state.get("final_answer", ""))
+        return stream, sources, model_name, round(elapsed_ms, 2)
 
     def _build_graph(self):
         graph = StateGraph(QueryState)
@@ -187,7 +155,15 @@ class RAGService:
             },
         )
         graph.add_edge("planner", "tool_orchestrator")
-        graph.add_edge("tool_orchestrator", "writer")
+        graph.add_conditional_edges(
+            "tool_orchestrator",
+            self._next_after_tools,
+            {
+                "planner": "planner",
+                "writer": "writer",
+                "finalize_response": "finalize_response",
+            },
+        )
         graph.add_edge("writer", "validation_router")
         graph.add_edge("validation_router", "decision_node")
         graph.add_conditional_edges(
@@ -257,7 +233,7 @@ class RAGService:
             validation_level = self.FALLBACK_VALIDATION_LEVEL
 
         eval_flags = state.get("eval_flags", {})
-        if eval_flags.get("reduce_risky_routes") and route in {"direct", "tool_heavy", "rag_multi_hop"}:
+        if eval_flags.get("reduce_risky_routes") and route in {"direct"}:
             route = "rag_simple"
             validation_level = "strict"
 
@@ -435,13 +411,27 @@ class RAGService:
                         ),
                     }
 
-        if evidence and state.get("route") in {"rag_simple", "rag_multi_hop", "tool_heavy"}:
+        if evidence and state.get("route") in {"rag_simple"}:
             evidence = self._rerank_evidence(state.get("query", ""), evidence)
 
         if not evidence:
+            retries_used = int(state.get("retries_used", 0))
+            if retries_used >= self.MAX_RETRIES:
+                return {
+                    "validator_decision": "fail_safe",
+                    "validator_feedback": [
+                        "Retrieval failed after max retry; switching to fail-safe response."
+                    ],
+                    "tool_results": tool_results,
+                    "evidence": evidence,
+                    "stage_latency_ms": self._append_stage_latency(
+                        state, "tool_orchestrator", (time.time() - started) * 1000
+                    ),
+                }
             return {
                 "validator_decision": "replan",
                 "validator_feedback": ["No evidence retrieved; needs replan."],
+                "retries_used": retries_used + 1,
                 "tool_results": tool_results,
                 "evidence": evidence,
                 "stage_latency_ms": self._append_stage_latency(
@@ -450,6 +440,7 @@ class RAGService:
             }
 
         return {
+            "validator_decision": "pass",
             "tool_results": tool_results,
             "evidence": evidence,
             "stage_latency_ms": self._append_stage_latency(
@@ -458,7 +449,7 @@ class RAGService:
         }
 
     async def _writer(self, state: QueryState) -> Dict[str, Any]:
-        if state.get("validator_decision") == "fail_safe":
+        if state.get("validator_decision") in {"fail_safe", "replan"}:
             return {}
 
         started = time.time()
@@ -625,6 +616,14 @@ class RAGService:
             return "writer"
         return "planner"
 
+    def _next_after_tools(self, state: QueryState) -> Literal["planner", "writer", "finalize_response"]:
+        decision = state.get("validator_decision", "pass")
+        if decision == "fail_safe":
+            return "finalize_response"
+        if decision == "replan":
+            return "planner"
+        return "writer"
+
     def _next_after_decision(self, state: QueryState) -> Literal["planner", "writer", "finalize_response"]:
         decision = state.get("validator_decision", "replan")
         if decision in {"pass", "fail_safe"}:
@@ -635,6 +634,25 @@ class RAGService:
 
     async def _single_chunk_stream(self, text: str) -> AsyncIterator[str]:
         yield text
+
+    async def _chunked_text_stream(self, text: str, chunk_size: int = 96) -> AsyncIterator[str]:
+        if not text:
+            return
+        for idx in range(0, len(text), chunk_size):
+            yield text[idx : idx + chunk_size]
+
+    async def _run_graph(self, query: str, top_k: int) -> tuple[QueryState, float]:
+        start_time = time.time()
+        policy = self.policy_service.get_runtime_policy()
+        effective_top_k = max(top_k, policy.min_top_k)
+
+        initial_state = self._new_state(query=query, top_k=effective_top_k)
+        initial_state["eval_flags"] = policy.as_flags()
+        final_state = await self.graph.ainvoke(initial_state)
+
+        elapsed_ms = (time.time() - start_time) * 1000
+        final_state["latency_ms"] = round(elapsed_ms)
+        return final_state, elapsed_ms
 
     async def _call_structured_with_retry(self, fn, *args, **kwargs):
         last_exc: Exception | None = None
@@ -814,12 +832,13 @@ class RAGService:
             "token_usage_json": state.get("token_usage", {}),
             "eval_flags_json": state.get("eval_flags", {}),
             "validator_scores_json": state.get("validator_scores", {}),
+            "created_at": datetime.utcnow(),
         }
         self.last_observation = payload
 
         try:
             with Session(engine) as session:
-                session.add(QueryObservation(**payload))
+                session.exec(insert(QueryObservation).values(**payload))
                 session.commit()
         except Exception:
             # Telemetry persistence must never break user-facing query execution.
