@@ -60,3 +60,22 @@ class TestMetricsEndpoint:
         """Test Prometheus metrics endpoint is exposed."""
         response = client.get("/metrics")
         assert response.status_code == 200
+
+
+class TestCorsBehavior:
+    def test_unhandled_server_error_includes_cors_header(self):
+        """Unhandled 500 responses should still include CORS headers for allowed origins."""
+        from main import app as asgi_app
+
+        inner_app = asgi_app.app if hasattr(asgi_app, "app") else asgi_app
+        test_path = "/__cors_error_test"
+
+        @inner_app.get(test_path)
+        async def _cors_error_test():
+            raise RuntimeError("intentional cors test crash")
+
+        with TestClient(asgi_app, raise_server_exceptions=False) as c:
+            response = c.get(test_path, headers={"Origin": "https://yongjiexue.com"})
+
+        assert response.status_code == 500
+        assert response.headers.get("access-control-allow-origin") == "https://yongjiexue.com"

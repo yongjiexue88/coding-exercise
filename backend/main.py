@@ -126,13 +126,13 @@ app = FastAPI(
 )
 
 # CORS — allow frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+allowed_origins = [
+    "https://yongjiexue.com",
+    "https://www.yongjiexue.com",
+    "https://rag-backend-963140776209.us-central1.run.app",
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
 
 
 # --- Health ---
@@ -191,9 +191,15 @@ async def query_stream(request: QueryRequest):
     if rag_service.vector_store.get_document_count() == 0:
         raise HTTPException(status_code=400, detail="No documents indexed. Call POST /ingest first.")
 
-    stream, sources, model_name, precomputed_ms = await rag_service.query_stream(
-        request.query, top_k=request.top_k
-    )
+    try:
+        stream, sources, model_name, precomputed_ms = await rag_service.query_stream(
+            request.query, top_k=request.top_k
+        )
+    except Exception as e:
+        error_msg = str(e)
+        if "API key" in error_msg or "API_KEY_INVALID" in error_msg:
+            raise HTTPException(status_code=401, detail="Invalid or missing Gemini API key. Set GEMINI_API_KEY in .env")
+        raise HTTPException(status_code=500, detail=f"LLM generation failed: {error_msg}")
 
     async def event_generator():
         stream_start = time.time()
@@ -287,6 +293,17 @@ async def list_documents():
 async def metrics():
     """Prometheus metrics endpoint."""
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+# Keep CORS as the outermost ASGI layer so even unhandled 500 responses
+# include CORS headers (Starlette recommendation).
+app = CORSMiddleware(
+    app=app,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 if __name__ == "__main__":

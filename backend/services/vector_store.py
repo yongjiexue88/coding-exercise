@@ -97,10 +97,16 @@ class VectorStoreService:
                 JOIN corpus_state cs ON d.run_id = cs.active_run_id
                 WHERE cs.corpus_name = :corpus_name
             """)
-            result = session.exec(stmt, params={"corpus_name": corpus_name}).one()
+            result = session.exec(stmt, params={"corpus_name": corpus_name}).first()
+            if result is None:
+                return 0
             if isinstance(result, (tuple, list)):
                 return int(result[0])
-            return int(result)
+            # Handle SQLAlchemy Row or binary/int
+            try:
+                return int(result[0])
+            except (TypeError, KeyError, IndexError):
+                return int(result)
 
     def get_all_sources(self, corpus_name: str = "default") -> List[dict]:
         """Get a summary of all indexed sources in the active run."""
