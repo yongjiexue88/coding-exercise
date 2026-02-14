@@ -1,8 +1,8 @@
 # 🧠 RAG System — Retrieval-Augmented Generation
 
-A full-stack RAG system that retrieves relevant documents from a vector database and generates grounded responses using Google Gemini. Features **SSE streaming**, a **React chat interface**, and a **built-in evaluation framework**.
+A full-stack RAG system that retrieves relevant documents from a vector database and generates grounded responses using Google Gemini. Features **LangGraph orchestration**, **strict structured routing/planning/validation**, **SSE streaming**, a **React chat interface**, and a **built-in evaluation framework**.
 
-> Built with FastAPI, Neon PostgreSQL (`pgvector`), Google Gemini, and React.
+> Built with FastAPI, LangGraph, Neon PostgreSQL (`pgvector`), Google Gemini, and React.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ flowchart TB
         EMB["Embedding Service<br/>Gemini Embedding"]
         VS["Vector Store<br/>Neon pgvector"]
         LLM["LLM Service<br/>Gemini 2.0 Flash"]
-        RAG["RAG Orchestrator"]
+        RAG["LangGraph Orchestrator"]
     end
 
     subgraph Data["Data Layer"]
@@ -46,11 +46,22 @@ flowchart TB
 ### Key Features
 
 - 🔍 **Semantic search** — Gemini embeddings with Neon PostgreSQL (`pgvector`)
+- 🧭 **LangGraph state machine** — Routed execution with conditional edges and retry paths
+- ✅ **Strict structured control nodes** — Schema-enforced Router/Planner/Validator outputs
 - ⚡ **Streaming** — Token-by-token SSE streaming for real-time responses
 - 📊 **Evaluation** — Built-in metrics framework (precision, recall, faithfulness)
 - 🎨 **Chat UI** — Dark-mode React frontend with source citations
 - 🐳 **Docker Compose** — One-command full-stack deployment
 - 🚀 **CI/CD** — Automated deploy to Cloud Run (backend) and Firebase Hosting (frontend)
+
+## RAG Plan Status
+
+- [x] Phase 1 MVP checklist complete (QueryState, router, planner, tool_orchestrator, writer, relevance/groundedness validator, single retry loop)
+- [x] LangGraph runtime integrated for orchestration
+- [x] Strict schema-based Router/Planner/Validator output wired through Gemini JSON mode
+- [x] Legacy SQLModel SQuAD ingestion path retained as an optional pipeline (not in main API runtime)
+- [ ] Phase 2 (agent layer, completeness and citation checks, richer failure policies)
+- [ ] Phase 3 (observability dashboards, caching/rate limiting, latency/cost tuning)
 
 ---
 
@@ -62,7 +73,7 @@ flowchart TB
 # 1. Clone and configure
 git clone <repo-url> && cd coding-exercise
 cp backend/.env.example backend/.env
-# Edit backend/.env — add your GEMINI_API_KEY
+# Edit backend/.env — set GEMINI_API_KEY and DATABASE_URL
 
 # 2. Start everything
 docker-compose up --build
@@ -86,7 +97,7 @@ pip install -r requirements.txt
 
 # Configure your Gemini API key
 cp .env.example .env
-# Edit .env and set GEMINI_API_KEY=your-key-here
+# Edit .env and set GEMINI_API_KEY + DATABASE_URL
 
 # Ingest the source documents into Neon PostgreSQL (pgvector)
 python -m data.ingest
@@ -129,6 +140,19 @@ curl -X POST http://localhost:8000/query \
 
 ---
 
+## GitHub Actions Deploy Secrets
+
+For backend auto-deploy (`.github/workflows/deploy-backend.yml`), set these repository secrets:
+
+- `GCP_PROJECT_ID`
+- `GCP_SA_KEY`
+- `GEMINI_API_KEY`
+- `DATABASE_URL` (Neon/Postgres connection string)
+
+Without `DATABASE_URL`, Cloud Run startup will fail when `VectorStoreService` initializes.
+
+---
+
 ## Evaluation
 
 Run the built-in evaluation framework:
@@ -156,7 +180,7 @@ Results are printed as a table and saved to `evaluation_results.json`.
 
 | Component | Technology |
 |-----------|-----------|
-| Backend | Python, FastAPI, Uvicorn |
+| Backend | Python, FastAPI, Uvicorn, LangGraph |
 | Vector DB | Neon PostgreSQL + `pgvector` |
 | Embeddings | Gemini Embedding (`gemini-embedding-001`) |
 | LLM | Google Gemini 2.0 Flash |
@@ -202,8 +226,8 @@ coding-exercise/
 │   ├── services/
 │   │   ├── embedding.py         # Gemini embedding service (gemini-embedding-001)
 │   │   ├── vector_store.py      # Neon PostgreSQL pgvector operations
-│   │   ├── llm.py               # Gemini LLM integration + streaming
-│   │   └── rag.py               # RAG pipeline orchestration
+│   │   ├── llm.py               # Gemini LLM integration + strict structured output helpers
+│   │   └── rag.py               # LangGraph RAG pipeline orchestration
 │   ├── data/
 │   │   ├── ingest.py            # Document chunking & ingestion
 │   │   └── documents/           # Source .md files (knowledge base)

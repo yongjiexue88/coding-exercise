@@ -5,9 +5,7 @@ services:
       - "8000:8000"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - CHROMA_PERSIST_DIR=/app/chroma_db
-    volumes:
-      - chroma_data:/app/chroma_db
+      - DATABASE_URL=${DATABASE_URL}
     restart: unless-stopped
 
   frontend:
@@ -17,6 +15,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-
-volumes:
-  chroma_data:

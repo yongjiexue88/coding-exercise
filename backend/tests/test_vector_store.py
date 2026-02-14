@@ -3,86 +3,71 @@
 from __future__ import annotations
 
 import sys
+from unittest.mock import MagicMock, patch
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
-import chromadb
-
+from services.vector_store import VectorStoreService
 
 class TestVectorStore:
-    """Tests for ChromaDB vector store operations using a fresh in-memory client."""
+    """Tests for VectorStoreService using mocks for psycopg2."""
 
-    @pytest.fixture(autouse=True)
-    def setup(self, tmp_path):
-        """Create a fresh ChromaDB client for each test."""
-        self.client = chromadb.PersistentClient(path=str(tmp_path / "test_chroma"))
-        self.collection = self.client.get_or_create_collection(
-            name="test_collection",
-            metadata={"hnsw:space": "cosine"},
-        )
+    @pytest.fixture
+    def mock_conn(self):
+        with patch("psycopg2.connect") as mock_connect, \
+             patch("services.vector_store.register_vector") as mock_register:
+            mock_conn = MagicMock()
+            mock_cursor = MagicMock()
+            mock_connect.return_value = mock_conn
+            mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+            yield mock_conn, mock_cursor
 
-    def test_add_and_search(self):
-        """Test adding documents and searching by embedding."""
-        self.collection.upsert(
-            ids=["1", "2", "3"],
-            embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            documents=["Python is great", "JavaScript is fun", "CSS is styling"],
-            metadatas=[
-                {"source": "python.md"},
-                {"source": "js.md"},
-                {"source": "css.md"},
-            ],
-        )
+    def test_initialize_db(self, mock_conn):
+        """Test database initialization."""
+        conn, cursor = mock_conn
+        VectorStoreService()
+        
+        # Check if table creation SQL was executed
+        assert cursor.execute.call_count >= 1
+        ensure_table = any("CREATE TABLE IF NOT EXISTS document_chunks" in str(args) for args, _ in cursor.execute.call_args_list)
+        assert ensure_table
 
-        results = self.collection.query(
-            query_embeddings=[[1.0, 0.0, 0.0]],
-            n_results=2,
-            include=["documents", "metadatas", "distances"],
-        )
+    def test_add_documents(self, mock_conn):
+        """Test adding documents."""
+        conn, cursor = mock_conn
+        store = VectorStoreService()
+        
+        ids = ["1", "2"]
+        embeddings = [[0.1, 0.2], [0.3, 0.4]]
+        documents = ["doc1", "doc2"]
+        metadatas = [{"source": "s1"}, {"source": "s2"}]
+        
+        store.add_documents(ids, embeddings, documents, metadatas)
+        
+        # Verify insert execution
+        assert cursor.execute.call_count >= 1
+        insert_calls = [
+            args for args, _ in cursor.execute.call_args_list 
+            if "INSERT INTO document_chunks" in str(args[0])
+        ]
+        assert len(insert_calls) == 2
+
+    def test_search(self, mock_conn):
+        """Test search query."""
+        conn, cursor = mock_conn
+        store = VectorStoreService()
+        
+        # Mock search result
+        cursor.fetchall.return_value = [
+            ("content1", "s1", {"source": "s1"}, 0.1),
+            ("content2", "s2", {"source": "s2"}, 0.2)
+        ]
+        
+        results = store.search([0.1, 0.2], top_k=2)
+        
         assert len(results["documents"][0]) == 2
-        assert "Python is great" in results["documents"][0]
+        assert results["documents"][0][0] == "content1"
+        assert results["distances"][0][0] == 0.1
 
-    def test_document_count(self):
-        """Test document count tracking."""
-        assert self.collection.count() == 0
-        self.collection.upsert(
-            ids=["1"],
-            embeddings=[[1.0, 0.0]],
-            documents=["test"],
-            metadatas=[{"source": "test.md"}],
-        )
-        assert self.collection.count() == 1
-
-    def test_get_all_sources(self):
-        """Test retrieving source document metadata."""
-        self.collection.upsert(
-            ids=["1", "2", "3"],
-            embeddings=[[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]],
-            documents=["chunk 1", "chunk 2", "chunk 3"],
-            metadatas=[
-                {"source": "doc_a.md"},
-                {"source": "doc_a.md"},
-                {"source": "doc_b.md"},
-            ],
-        )
-        all_data = self.collection.get(include=["metadatas"])
-        source_counts = {}
-        for meta in all_data["metadatas"]:
-            src = meta.get("source", "unknown")
-            source_counts[src] = source_counts.get(src, 0) + 1
-        assert source_counts["doc_a.md"] == 2
-        assert source_counts["doc_b.md"] == 1
-
-    def test_reset(self):
-        """Test collection reset clears all data."""
-        self.collection.upsert(
-            ids=["1"],
-            embeddings=[[1.0]],
-            documents=["test"],
-            metadatas=[{"source": "test.md"}],
-        )
-        assert self.collection.count() == 1
-        self.client.delete_collection("test_collection")
-        new_collection = self.client.get_or_create_collection(name="test_collection")
-        assert new_collection.count() == 0

@@ -1,3 +1,8 @@
+"""Optional verifier for the legacy SQuAD SQLModel ingestion pipeline.
+
+This script validates SQLModel table counts and vector counts for the optional
+SQuAD path. It is not used by the main API runtime.
+"""
 
 import logging
 from sqlmodel import Session, select, func

@@ -1,3 +1,9 @@
+"""Optional SQLModel tables for legacy SQuAD structured ingestion.
+
+These models are kept for the standalone SQuAD pipeline and are not required
+for the primary RAG API runtime.
+"""
+
 from typing import List, Optional
 from uuid import UUID, uuid4
 from sqlmodel import Field, SQLModel, Relationship, JSON

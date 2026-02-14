@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -58,4 +59,6 @@ jobs:
             --cpu 1 \
             --max-instances 1 \
             --concurrency 80 \
-            --set-env-vars "GEMINI_MODEL=gemini-2.0-flash,CHROMA_PERSIST_DIR=/tmp/chroma_db,GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"
+            --set-env-vars "GEMINI_MODEL=gemini-2.0-flash" \
+            --set-env-vars "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" \
+            --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }}"

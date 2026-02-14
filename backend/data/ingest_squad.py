@@ -1,3 +1,8 @@
+"""Optional legacy SQuAD ingestion pipeline.
+
+This script is kept as a separate structured-ingestion path (SQLModel tables +
+vector embeddings). It is not part of the default FastAPI startup/runtime flow.
+"""
 
 import json
 import logging
@@ -22,7 +27,7 @@ def load_squad_data(file_path: Path) -> dict:
         return json.load(f)
 
 def clear_data(session: Session):
-    """Clear existing data from Postgres and Chroma."""
+    """Clear existing data from SQLModel tables and Neon vectors."""
     logger.info("🗑️  Clearing existing data...")
     # Clear Postgres
     session.exec(delete(Question))

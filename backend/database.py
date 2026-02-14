@@ -1,3 +1,8 @@
+"""Optional SQLModel database layer used by legacy SQuAD ingestion scripts.
+
+This module is not used by the primary FastAPI + LangGraph runtime path.
+"""
+
 import os
 from sqlmodel import SQLModel, create_engine, Session
 from dotenv import load_dotenv
