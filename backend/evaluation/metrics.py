@@ -1,4 +1,11 @@
-"""Custom evaluation metrics for the RAG system."""
+"""Legacy-compatible metric helpers.
+
+These wrappers are kept for backward compatibility while the V1 evaluation
+runner migrates to retrieval_metrics.py + judges.py + perf_metrics.py.
+"""
+
+from evaluation.answer_metrics import answer_length_score as _answer_length_score
+from evaluation.retrieval_metrics import mrr_at_k
 
 
 def context_precision(retrieved_sources: list[str], expected_source: str) -> float:
@@ -16,10 +23,7 @@ def context_recall_at_k(retrieved_sources: list[str], expected_source: str) -> f
     Returns a score between 0.0 and 1.0, where 1.0 means the expected
     source was the first result.
     """
-    for i, source in enumerate(retrieved_sources):
-        if source == expected_source:
-            return 1.0 / (i + 1)  # Reciprocal rank
-    return 0.0
+    return mrr_at_k(retrieved_sources, [expected_source], k=max(len(retrieved_sources), 1))
 
 
 def keyword_coverage(answer: str, expected_keywords: list[str]) -> float:
@@ -39,12 +43,7 @@ def answer_length_score(answer: str, min_words: int = 20, max_words: int = 500) 
 
     Returns 1.0 for answers in the ideal range, lower for extremes.
     """
-    word_count = len(answer.split())
-    if word_count < min_words:
-        return word_count / min_words
-    if word_count > max_words:
-        return max(0.5, max_words / word_count)
-    return 1.0
+    return _answer_length_score(answer, min_words=min_words, max_words=max_words)
 
 
 def faithfulness_heuristic(answer: str, context_docs: list[str]) -> float:

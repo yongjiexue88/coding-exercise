@@ -38,6 +38,8 @@ class VectorStoreService:
 
             stmt = text("""
                 SELECT
+                    c.id,
+                    c.chunk_index,
                     c.content,
                     d.source_id,
                     c.metadata_json,
@@ -69,11 +71,13 @@ class VectorStoreService:
             current_dists = []
 
             for row in results:
-                content, source, meta, dist = row
+                chunk_id, chunk_index, content, source, meta, dist = row
                 current_docs.append(content)
                 # Merge explicit source_id with other metadata
                 if meta is None: meta = {}
                 meta["source"] = source
+                meta["chunk_id"] = str(chunk_id)
+                meta["chunk_index"] = chunk_index
                 current_metas.append(meta)
                 current_dists.append(float(dist))
 

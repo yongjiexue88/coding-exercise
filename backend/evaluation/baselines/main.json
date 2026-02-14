@@ -1,0 +1,15 @@
+{
+  "retrieval": {
+    "avg_recall_at_k": 0.55,
+    "avg_mrr_at_k": 0.50,
+    "k": 5
+  },
+  "answer": {
+    "avg_groundedness": 0.87,
+    "hallucination_rate": 0.06
+  },
+  "perf": {
+    "p95_ms": 3200,
+    "avg_cost_usd": 0.012
+  }
+}

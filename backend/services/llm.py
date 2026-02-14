@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, AsyncIterator, Literal
 
 import google.generativeai as genai
@@ -38,7 +39,7 @@ class RouterOutput(BaseModel):
 class PlanStep(BaseModel):
     id: str = Field(min_length=1, max_length=20)
     type: Literal["retrieve", "analyze", "compute", "write"]
-    tool: Literal["vector_search", "sql_query", "web_fetch", "llm_reason", "rerank", "calculator"]
+    tool: Literal["vector_search", "rerank"]
     input: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
     success_criteria: str = Field(min_length=1, max_length=300)
@@ -106,11 +107,7 @@ PLANNER_RESPONSE_SCHEMA = {
                         "type": "STRING",
                         "enum": [
                             "vector_search",
-                            "sql_query",
-                            "web_fetch",
-                            "llm_reason",
                             "rerank",
-                            "calculator",
                         ],
                     },
                     "input": {
@@ -202,10 +199,35 @@ class LLMService:
         feedback: list[str] | None = None,
     ) -> str:
         """Generate a complete response (non-streaming)."""
+        text, _ = await self.generate_with_metadata(
+            query=query,
+            context_docs=context_docs,
+            route=route,
+            feedback=feedback,
+        )
+        return text
+
+    async def generate_with_metadata(
+        self,
+        query: str,
+        context_docs: list[dict],
+        route: str = "rag_simple",
+        feedback: list[str] | None = None,
+        model_name: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Generate answer text and return usage/latency metadata."""
         prompt = _build_prompt(query, context_docs, route=route, feedback=feedback)
-        model = self._build_model(system_instruction=SYSTEM_PROMPT)
+        model = self._build_model(system_instruction=SYSTEM_PROMPT, model_name=model_name)
+
+        started = time.time()
         response = model.generate_content(prompt)
-        return getattr(response, "text", "") or ""
+        latency_ms = (time.time() - started) * 1000
+
+        text = getattr(response, "text", "") or ""
+        usage = self._extract_usage_metadata(response)
+        usage["latency_ms"] = round(latency_ms, 2)
+        usage["model_name"] = model_name or self.current_model_name
+        return text, usage
 
     async def generate_stream(
         self,
@@ -224,27 +246,31 @@ class LLMService:
 
     async def route_query(self, query: str) -> dict[str, Any]:
         """Route a query using strict schema-constrained JSON output."""
+        output, _ = await self.route_query_with_metadata(query)
+        return output
+
+    async def route_query_with_metadata(self, query: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Route query and include usage metadata."""
         prompt = f"""Classify this user query for a RAG system.
 
 User Query:
 {query}
 """
-        output = self._generate_structured(
+        output, usage = self.generate_structured_with_metadata(
             prompt=prompt,
             schema_model=RouterOutput,
             response_schema=ROUTER_RESPONSE_SCHEMA,
         )
 
+        data = output.model_dump()
         if output.confidence < 0.6 and output.route != "unsafe":
-            data = output.model_dump()
             data["route"] = "rag_simple"
             data["validation_level"] = "strict"
             data["needs_planner"] = True
             data["needs_agents"] = False
             data["reason"] = f"{output.reason} (low-confidence fallback applied)"
-            return data
 
-        return output.model_dump()
+        return data, usage
 
     async def build_plan(
         self,
@@ -254,6 +280,17 @@ User Query:
         feedback: list[str] | None = None,
     ) -> dict[str, Any]:
         """Build a strict-schema plan for execution."""
+        output, _ = await self.build_plan_with_metadata(query, route, top_k=top_k, feedback=feedback)
+        return output
+
+    async def build_plan_with_metadata(
+        self,
+        query: str,
+        route: str,
+        top_k: int = 3,
+        feedback: list[str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Build a strict-schema plan and include usage metadata."""
         feedback_text = ""
         if feedback:
             feedback_text = "\nValidator feedback to address:\n" + "\n".join(f"- {item}" for item in feedback)
@@ -264,12 +301,12 @@ Route: {route}
 Top K Retrieval: {top_k}
 Query: {query}{feedback_text}
 """
-        output = self._generate_structured(
+        output, usage = self.generate_structured_with_metadata(
             prompt=prompt,
             schema_model=PlannerOutput,
             response_schema=PLANNER_RESPONSE_SCHEMA,
         )
-        return output.model_dump()
+        return output.model_dump(), usage
 
     async def validate_answer(
         self,
@@ -279,6 +316,22 @@ Query: {query}{feedback_text}
         validation_level: str = "basic",
     ) -> dict[str, Any]:
         """Validate answer quality and return strict-schema decision."""
+        output, _ = await self.validate_answer_with_metadata(
+            query=query,
+            answer=answer,
+            context_docs=context_docs,
+            validation_level=validation_level,
+        )
+        return output
+
+    async def validate_answer_with_metadata(
+        self,
+        query: str,
+        answer: str,
+        context_docs: list[dict],
+        validation_level: str = "basic",
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Validate answer and include usage metadata."""
         context_preview = "\n".join(
             f"- {doc.get('source', 'Unknown')}: {doc.get('content', '')[:800]}"
             for doc in context_docs
@@ -296,32 +349,31 @@ Answer:
 Evidence:
 {context_preview if context_preview else "[No evidence]"}
 """
-        output = self._generate_structured(
+        output, usage = self.generate_structured_with_metadata(
             prompt=prompt,
             schema_model=ValidatorOutput,
             response_schema=VALIDATOR_RESPONSE_SCHEMA,
         )
-        return output.model_dump()
+        return output.model_dump(), usage
 
-    def _build_model(self, system_instruction: str | None = None) -> genai.GenerativeModel:
-        return genai.GenerativeModel(
-            model_name=settings.gemini_model,
-            system_instruction=system_instruction,
-        )
-
-    def _generate_structured(
+    def generate_structured_with_metadata(
         self,
         prompt: str,
         schema_model: type[BaseModel],
         response_schema: dict[str, Any],
-    ) -> BaseModel:
-        """Generate schema-constrained JSON and validate with Pydantic."""
-        model = self._build_model()
+        system_instruction: str | None = None,
+        model_name: str | None = None,
+        temperature: float = 0.0,
+    ) -> tuple[BaseModel, dict[str, Any]]:
+        """Generate schema-constrained JSON and return validated output + metadata."""
+        model = self._build_model(system_instruction=system_instruction, model_name=model_name)
+
+        started = time.time()
         try:
             response = model.generate_content(
                 prompt,
                 generation_config=GenerationConfig(
-                    temperature=0.0,
+                    temperature=temperature,
                     response_mime_type="application/json",
                     response_schema=response_schema,
                 ),
@@ -334,6 +386,49 @@ Evidence:
             raise StructuredOutputError("Gemini returned empty structured payload.")
 
         try:
-            return schema_model.model_validate_json(payload_text)
+            validated = schema_model.model_validate_json(payload_text)
         except ValidationError as exc:
             raise StructuredOutputError(f"Schema validation failed: {exc}") from exc
+
+        usage = self._extract_usage_metadata(response)
+        usage["latency_ms"] = round((time.time() - started) * 1000, 2)
+        usage["model_name"] = model_name or self.current_model_name
+        return validated, usage
+
+    def _build_model(
+        self,
+        system_instruction: str | None = None,
+        model_name: str | None = None,
+    ) -> genai.GenerativeModel:
+        return genai.GenerativeModel(
+            model_name=model_name or settings.gemini_model,
+            system_instruction=system_instruction,
+        )
+
+    def _extract_usage_metadata(self, response: Any) -> dict[str, Any]:
+        usage_meta = getattr(response, "usage_metadata", None)
+
+        def _num(name: str) -> int:
+            if usage_meta is None:
+                return 0
+            value = getattr(usage_meta, name, None)
+            if value is None:
+                return 0
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
+        prompt_tokens = _num("prompt_token_count") or _num("prompt_tokens")
+        completion_tokens = (
+            _num("candidates_token_count")
+            or _num("completion_token_count")
+            or _num("completion_tokens")
+        )
+        total_tokens = _num("total_token_count") or (prompt_tokens + completion_tokens)
+
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }

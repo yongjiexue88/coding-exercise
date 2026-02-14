@@ -13,3 +13,5 @@ sqlmodel
 psycopg2-binary
 asyncpg
 langgraph>=0.0.10
+prometheus-client>=0.20.0
+PyYAML>=6.0.1

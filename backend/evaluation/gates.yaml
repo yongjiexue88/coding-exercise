@@ -1,0 +1,11 @@
+retrieval:
+  recall_at_5_max_drop_pct_points: 3.0
+  mrr_at_5_max_drop_pct_points: 5.0
+
+answer:
+  groundedness_min: 0.85
+  hallucination_rate_max: 0.08
+
+performance:
+  p95_latency_ms_max: 3500
+  avg_cost_usd_max: 0.015

@@ -60,15 +60,15 @@ flowchart TD
 
 ### Implementation Status
 
-- [x] Data Sources
-- [x] Data Processing (parse -> chunk -> metadata)
-- [x] Database Layer (Vector + Relational)
-- [x] User Query (normalize + validate input)
+- [x] Data Sources (Completed)
+- [x] Data Processing (Completed)
+- [x] Database Layer (Completed)
+- [x] User Query (Guard implemented)
 - [ ] Reasoning Engine (plan + route + tools)
 - [ ] Multi-Agent System
 - [ ] Database Retrieval (agentic retrieval loop)
 - [ ] Human Validation (optional)
-- [ ] Evaluation Layer + feedback loop
+- [/] Evaluation Layer + feedback loop (Framework ready)
 
 ### Data Sources & Processing (Current Milestone)
 
@@ -90,6 +90,17 @@ flowchart TD
   3. Keep explicit request bounds (`max_length=1000`, `top_k` range)
 - **Implementation**: `backend/services/query_guard.py` + `QueryRequest` validator in `backend/models.py`
 - **Scope note**: Rate limits, intent gating, and confidence thresholds are planned in later milestones.
+
+### Evaluation Layer & Feedback Loop (Current Milestone)
+
+- **Status**: ✅ Framework implemented
+- **What is implemented now**:
+  1. **Runner**: Automated execution engine (`runner.py`)
+  2. **Judges**: LLM-based judges for Groundedness and Quality (`judges.py`)
+  3. **Gates**: CI/CD quality gates with strict thresholds (`check_gates.py`)
+  4. **Reports**: Detailed JSON/HTML artifacts for each run
+- **Implementation**: `backend/evaluation/` directory
+- **Scope note**: Feedback loop to Data Sources is currently manual. Automated retraining/re-indexing loops are planned for future milestones.
 
 ## Database Layer
 
@@ -220,26 +231,38 @@ Without `DATABASE_URL`, Cloud Run startup will fail when `VectorStoreService` in
 
 ---
 
-## Evaluation
+## 📊 Evaluation & Quality Gates
 
-Run the built-in evaluation framework:
+The project includes a custom evaluation framework located in `backend/evaluation/`. It replaces heavier libraries like RAGAS with transparent, strict-schema LLM judges and heuristic metrics.
+
+### 1. Running Evaluations
+
+Run limits or full sweeps using the runner:
 
 ```bash
 cd backend
-python -m evaluation.evaluate
+# Run full evaluation (retrieval + LLM judges) with top-k=5
+python -m evaluation.runner --mode full_rag_with_judges --top-k 5 --limit 10
+
+# Run retrieval-only (faster, for experimenting with embeddings/chunking)
+python -m evaluation.runner --mode retrieval_only --top-k 5
 ```
 
-This runs 12 curated queries and measures:
+### 2. Checking Quality Gates
 
-| Metric | Description |
-|--------|-------------|
-| Context Precision | Was the correct source document retrieved? |
-| Context Recall@K | Position of the correct source in results |
-| Keyword Coverage | Do expected keywords appear in the answer? |
-| Answer Length | Is the answer appropriately sized? |
-| Faithfulness | Is the answer grounded in retrieved context? |
+CI/CD pipelines enforce quality standards using `gates.yaml`. This script fails the build if metrics drop below baselines (regression) or absolute thresholds.
 
-Results are printed as a table and saved to `evaluation_results.json`.
+```bash
+python -m evaluation.check_gates --scope full
+```
+
+### 3. Reports & Artifacts
+
+All runs generate artifacts in `backend/evaluation/reports/`:
+- **`retrieval_metrics.json`**: Precision, Recall, MRR, NDCG.
+- **`answer_metrics.json`**: Groundedness, Quality, Hallucination Rate.
+- **`latency_cost_metrics.json`**: P95 latency, cost per query, token usage.
+- **`examples_failed.jsonl`**: Specific cases that failed gates or retrieval.
 
 ---
 

@@ -9,15 +9,39 @@ import logging
 from uuid import UUID
 from contextlib import asynccontextmanager
 from typing import Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+try:
+    from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+except ImportError:  # pragma: no cover - fallback for local envs without prometheus-client
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
+
+    class _NoopMetric:
+        def inc(self, *_args, **_kwargs):
+            return None
+
+        def observe(self, *_args, **_kwargs):
+            return None
+
+        def labels(self, **_kwargs):
+            return self
+
+    def Counter(*_args, **_kwargs):  # type: ignore
+        return _NoopMetric()
+
+    def Histogram(*_args, **_kwargs):  # type: ignore
+        return _NoopMetric()
+
+    def generate_latest():  # type: ignore
+        return b""
 
 from services.rag import RAGService
 from data.pipeline.jobs import JobManager, JobWorker
 from database import create_db_and_tables
 # Import models_ingest to ensure tables are created
 import models_ingest
+import models_observability
 
 from models import (
     QueryRequest,
@@ -36,6 +60,38 @@ logger = logging.getLogger(__name__)
 rag_service: Optional[RAGService] = None
 job_worker: Optional[JobWorker] = None
 worker_task: Optional[asyncio.Task] = None
+
+QUERY_COUNT = Counter(
+    "rag_query_total",
+    "Total number of /query requests handled successfully.",
+)
+QUERY_LATENCY_MS = Histogram(
+    "rag_query_latency_ms",
+    "End-to-end query latency in milliseconds.",
+    buckets=(50, 100, 200, 500, 1000, 2000, 3500, 5000, 10000),
+)
+QUERY_COST_USD = Histogram(
+    "rag_query_cost_usd",
+    "Estimated query cost in USD.",
+    buckets=(0.0001, 0.0005, 0.001, 0.005, 0.01, 0.015, 0.03, 0.05),
+)
+QUERY_PROMPT_TOKENS = Counter(
+    "rag_query_prompt_tokens_total",
+    "Accumulated prompt tokens across successful queries.",
+)
+QUERY_COMPLETION_TOKENS = Counter(
+    "rag_query_completion_tokens_total",
+    "Accumulated completion tokens across successful queries.",
+)
+QUERY_TOTAL_TOKENS = Counter(
+    "rag_query_total_tokens_total",
+    "Accumulated total tokens across successful queries.",
+)
+VALIDATOR_DECISIONS = Counter(
+    "rag_validator_decision_total",
+    "Validator decisions by type.",
+    labelnames=("decision",),
+)
 
 
 @asynccontextmanager
@@ -102,6 +158,25 @@ async def query(request: QueryRequest):
 
     try:
         result = await rag_service.query(request.query, top_k=request.top_k)
+
+        observation = rag_service.last_observation or {}
+        QUERY_COUNT.inc()
+        QUERY_LATENCY_MS.observe(float(observation.get("query_time_ms", result.get("query_time_ms", 0.0))))
+        QUERY_COST_USD.observe(float(observation.get("cost_usd", 0.0)))
+
+        prompt_tokens = int(observation.get("prompt_tokens", 0))
+        completion_tokens = int(observation.get("completion_tokens", 0))
+        total_tokens = int(observation.get("total_tokens", 0))
+        if prompt_tokens:
+            QUERY_PROMPT_TOKENS.inc(prompt_tokens)
+        if completion_tokens:
+            QUERY_COMPLETION_TOKENS.inc(completion_tokens)
+        if total_tokens:
+            QUERY_TOTAL_TOKENS.inc(total_tokens)
+
+        decision = str(observation.get("validator_decision", "unknown"))
+        VALIDATOR_DECISIONS.labels(decision=decision).inc()
+
         return QueryResponse(**result)
     except Exception as e:
         error_msg = str(e)
@@ -205,6 +280,12 @@ async def list_documents():
     # This now queries the active run via VectorStoreService
     sources = rag_service.vector_store.get_all_sources()
     return [DocumentInfo(**s) for s in sources]
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 if __name__ == "__main__":

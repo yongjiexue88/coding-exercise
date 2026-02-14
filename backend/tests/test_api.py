@@ -53,3 +53,10 @@ class TestDocumentsEndpoint:
         response = client.get("/documents")
         assert response.status_code == 200
         assert isinstance(response.json(), list)
+
+
+class TestMetricsEndpoint:
+    def test_metrics_endpoint(self, client):
+        """Test Prometheus metrics endpoint is exposed."""
+        response = client.get("/metrics")
+        assert response.status_code == 200

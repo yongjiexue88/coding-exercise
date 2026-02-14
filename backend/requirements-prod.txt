@@ -10,3 +10,5 @@ langchain-text-splitters>=0.0.1
 langgraph>=0.0.10
 sqlmodel>=0.0.14
 asyncpg>=0.29.0
+prometheus-client>=0.20.0
+PyYAML>=6.0.1
