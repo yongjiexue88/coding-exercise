@@ -8,7 +8,7 @@ import asyncio
 import logging
 from uuid import UUID
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -92,6 +92,23 @@ VALIDATOR_DECISIONS = Counter(
     "Validator decisions by type.",
     labelnames=("decision",),
 )
+
+
+def _build_quality_summary(observation: dict[str, Any], sources_count: int) -> dict[str, Any]:
+    route = str(observation.get("route", ""))
+    decision = str(observation.get("validator_decision", ""))
+
+    if route == "unsafe":
+        verification = "safety_blocked"
+    elif decision == "pass" and sources_count > 0:
+        verification = "verified"
+    else:
+        verification = "limited_evidence"
+
+    return {
+        "verification": verification,
+        "sources_used": sources_count,
+    }
 
 
 @asynccontextmanager
@@ -191,17 +208,57 @@ async def query_stream(request: QueryRequest):
     if rag_service.vector_store.get_document_count() == 0:
         raise HTTPException(status_code=400, detail="No documents indexed. Call POST /ingest first.")
 
-    try:
-        stream, sources, model_name, precomputed_ms = await rag_service.query_stream(
-            request.query, top_k=request.top_k
-        )
-    except Exception as e:
-        error_msg = str(e)
-        if "API key" in error_msg or "API_KEY_INVALID" in error_msg:
-            raise HTTPException(status_code=401, detail="Invalid or missing Gemini API key. Set GEMINI_API_KEY in .env")
-        raise HTTPException(status_code=500, detail=f"LLM generation failed: {error_msg}")
-
     async def event_generator():
+        progress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        async def on_progress(event: dict[str, Any]) -> None:
+            await progress_queue.put(event)
+
+        query_task = asyncio.create_task(
+            rag_service.query_stream(
+                request.query,
+                top_k=request.top_k,
+                progress_callback=on_progress,
+            )
+        )
+
+        while True:
+            if query_task.done():
+                break
+            try:
+                status_event = await asyncio.wait_for(progress_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                continue
+
+            payload = {
+                "type": "status",
+                "step": status_event.get("step"),
+                "state": status_event.get("state"),
+                "label": status_event.get("label"),
+            }
+            if "meta" in status_event:
+                payload["meta"] = status_event["meta"]
+            yield f"data: {json.dumps(payload)}\n\n"
+
+        while not progress_queue.empty():
+            status_event = progress_queue.get_nowait()
+            payload = {
+                "type": "status",
+                "step": status_event.get("step"),
+                "state": status_event.get("state"),
+                "label": status_event.get("label"),
+            }
+            if "meta" in status_event:
+                payload["meta"] = status_event["meta"]
+            yield f"data: {json.dumps(payload)}\n\n"
+
+        try:
+            stream, sources, model_name, precomputed_ms = await query_task
+        except Exception as e:
+            error_data = json.dumps({"type": "error", "content": str(e)})
+            yield f"data: {error_data}\n\n"
+            return
+
         stream_start = time.time()
         try:
             async for chunk in stream:
@@ -213,11 +270,14 @@ async def query_stream(request: QueryRequest):
 
         stream_ms = (time.time() - stream_start) * 1000
         elapsed_ms = round(precomputed_ms + stream_ms, 2)
+        observation = rag_service.last_observation or {}
+        quality_summary = _build_quality_summary(observation, len(sources))
         done_data = json.dumps({
             "type": "done",
             "sources": [s.model_dump() for s in sources],
             "model": model_name,
             "query_time_ms": elapsed_ms,
+            "quality_summary": quality_summary,
         })
         yield f"data: {done_data}\n\n"
 

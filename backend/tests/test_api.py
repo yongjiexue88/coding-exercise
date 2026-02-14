@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -60,6 +61,68 @@ class TestMetricsEndpoint:
         """Test Prometheus metrics endpoint is exposed."""
         response = client.get("/metrics")
         assert response.status_code == 200
+
+
+class TestQueryStreamEndpoint:
+    def test_query_stream_emits_status_chunk_done_sequence(self, client, monkeypatch):
+        """Streaming endpoint should emit status events before chunk/done and keep done fields compatible."""
+        import main
+
+        class FakeSource:
+            def model_dump(self):
+                return {"content": "Doc content", "source": "doc.md", "relevance_score": 0.91}
+
+        class FakeVectorStore:
+            def get_document_count(self):
+                return 1
+
+        class FakeRAGService:
+            def __init__(self):
+                self.vector_store = FakeVectorStore()
+                self.last_observation = {"route": "rag_simple", "validator_decision": "pass"}
+
+            async def query_stream(self, query, top_k=3, progress_callback=None):
+                if progress_callback:
+                    await progress_callback(
+                        {
+                            "step": "understand",
+                            "state": "started",
+                            "label": "Understanding question",
+                        }
+                    )
+                    await progress_callback(
+                        {
+                            "step": "understand",
+                            "state": "completed",
+                            "label": "Understanding question",
+                        }
+                    )
+
+                async def fake_stream():
+                    yield "Hello world"
+
+                return fake_stream(), [FakeSource()], "gemini/fake-model", 12.0
+
+        monkeypatch.setattr(main, "rag_service", FakeRAGService())
+
+        response = client.post("/query/stream", json={"query": "hello", "top_k": 3})
+        assert response.status_code == 200
+
+        payloads = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert [payload["type"] for payload in payloads] == ["status", "status", "chunk", "done"]
+
+        done_payload = payloads[-1]
+        assert "sources" in done_payload
+        assert "model" in done_payload
+        assert "query_time_ms" in done_payload
+        assert done_payload["quality_summary"] == {
+            "verification": "verified",
+            "sources_used": 1,
+        }
 
 
 class TestCorsBehavior:

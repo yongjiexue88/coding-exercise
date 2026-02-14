@@ -3,13 +3,55 @@ import ChatInterface from './components/ChatInterface'
 import QueryInput from './components/QueryInput'
 
 const API_BASE = import.meta.env.PROD ? 'https://rag-backend-963140776209.us-central1.run.app' : 'http://localhost:8000'
+const PROGRESS_STEP_ORDER = ['understand', 'retrieve', 'draft', 'verify', 'finalize']
+const PROGRESS_LABELS = {
+    understand: 'Understanding question',
+    retrieve: 'Finding relevant sources',
+    draft: 'Drafting answer',
+    verify: 'Verifying answer',
+    finalize: 'Finalizing response',
+}
 
 const SUGGESTIONS = [
-    'Who won Super Bowl 50?',
-    'When did Nikola Tesla die?',
-    'What is the capital of Kenya?',
-    'What group bought Cyprus after the Norman conquest?',
+    'Which NFL team won Super Bowl 50?',
+    'What color was used to emphasize the 50th anniversary of the Super Bowl?',
+    'Who was the Super Bowl 50 MVP?',
+    'Which group headlined the Super Bowl 50 halftime show?',
 ]
+
+function createInitialProgressSteps() {
+    return PROGRESS_STEP_ORDER.map((step) => ({
+        step,
+        label: PROGRESS_LABELS[step],
+        state: 'pending',
+    }))
+}
+
+function mergeProgressSteps(existingSteps, event) {
+    const merged = new Map(
+        PROGRESS_STEP_ORDER.map((step) => [
+            step,
+            { step, label: PROGRESS_LABELS[step], state: 'pending' },
+        ])
+    )
+
+        ; (existingSteps || []).forEach((item) => {
+            if (!item?.step || !merged.has(item.step)) return
+            merged.set(item.step, { ...merged.get(item.step), ...item })
+        })
+
+    if (event?.step && merged.has(event.step)) {
+        const current = merged.get(event.step)
+        merged.set(event.step, {
+            ...current,
+            label: event.label || current.label,
+            state: event.state || current.state,
+            meta: event.meta || current.meta,
+        })
+    }
+
+    return PROGRESS_STEP_ORDER.map((step) => merged.get(step))
+}
 
 export default function App() {
     const [messages, setMessages] = useState([])
@@ -28,10 +70,20 @@ export default function App() {
         setIsLoading(true)
 
         // Add placeholder assistant message
-        const assistantMsg = { role: 'assistant', content: '', sources: [], model: '', isStreaming: true }
+        const assistantMsg = {
+            role: 'assistant',
+            content: '',
+            sources: [],
+            model: '',
+            isStreaming: true,
+            progressSteps: createInitialProgressSteps(),
+            qualitySummary: null,
+        }
         setMessages(prev => [...prev, assistantMsg])
 
         try {
+            let sawStatusEvent = false
+
             const res = await fetch(`${API_BASE}/query/stream`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -60,34 +112,71 @@ export default function App() {
                     const jsonStr = line.slice(6).trim()
                     if (!jsonStr) continue
 
+                    let event = null
                     try {
-                        const event = JSON.parse(jsonStr)
-
-                        if (event.type === 'chunk') {
-                            setMessages(prev => {
-                                const updated = [...prev]
-                                const last = updated[updated.length - 1]
-                                updated[updated.length - 1] = { ...last, content: last.content + event.content }
-                                return updated
-                            })
-                        } else if (event.type === 'done') {
-                            setMessages(prev => {
-                                const updated = [...prev]
-                                const last = updated[updated.length - 1]
-                                updated[updated.length - 1] = {
-                                    ...last,
-                                    isStreaming: false,
-                                    sources: event.sources || [],
-                                    model: event.model || '',
-                                    queryTime: event.query_time_ms,
-                                }
-                                return updated
-                            })
-                        } else if (event.type === 'error') {
-                            throw new Error(event.content)
-                        }
+                        event = JSON.parse(jsonStr)
                     } catch (parseErr) {
                         // Skip malformed JSON lines
+                        continue
+                    }
+
+                    if (event.type === 'status') {
+                        sawStatusEvent = true
+                        setMessages(prev => {
+                            const updated = [...prev]
+                            const last = updated[updated.length - 1]
+                            updated[updated.length - 1] = {
+                                ...last,
+                                progressSteps: mergeProgressSteps(last.progressSteps, event),
+                            }
+                            return updated
+                        })
+                    } else if (event.type === 'chunk') {
+                        setMessages(prev => {
+                            const updated = [...prev]
+                            const last = updated[updated.length - 1]
+                            updated[updated.length - 1] = { ...last, content: last.content + event.content }
+                            return updated
+                        })
+                    } else if (event.type === 'done') {
+                        // If status/done arrive in one buffered chunk, React may batch updates and
+                        // skip rendering the interim "thinking process". Yield one frame first.
+                        await new Promise((resolve) => {
+                            if (typeof window !== 'undefined' && window.requestAnimationFrame) {
+                                window.requestAnimationFrame(() => resolve())
+                                return
+                            }
+                            setTimeout(resolve, 0)
+                        })
+
+                        setMessages(prev => {
+                            const updated = [...prev]
+                            const last = updated[updated.length - 1]
+                            const sources = event.sources || []
+                            const qualitySummary = event.quality_summary || {
+                                    verification: sources.length > 0 ? 'verified' : 'limited_evidence',
+                                    sources_used: sources.length,
+                                }
+                            const progressSteps = sawStatusEvent
+                                ? last.progressSteps
+                                : mergeProgressSteps(last.progressSteps, {
+                                    step: 'finalize',
+                                    state: 'completed',
+                                    label: PROGRESS_LABELS.finalize,
+                                })
+                            updated[updated.length - 1] = {
+                                ...last,
+                                isStreaming: false,
+                                sources,
+                                model: event.model || '',
+                                queryTime: event.query_time_ms,
+                                qualitySummary,
+                                progressSteps,
+                            }
+                            return updated
+                        })
+                    } else if (event.type === 'error') {
+                        throw new Error(event.content || 'Query failed')
                     }
                 }
             }
@@ -99,6 +188,8 @@ export default function App() {
                     content: `Error: ${err.message}`,
                     isStreaming: false,
                     sources: [],
+                    progressSteps: [],
+                    qualitySummary: null,
                 }
                 return updated
             })

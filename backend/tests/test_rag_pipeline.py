@@ -272,3 +272,149 @@ async def test_query_no_evidence_replans_then_fails_safe_without_writer():
     assert result["sources"] == []
     assert vector_store.search_calls == 2
     assert llm.generate_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_query_stream_emits_progress_events_for_success_path():
+    rag = RAGService(
+        embedding_service=FakeEmbeddingService(),
+        vector_store=FakeVectorStoreService(),
+        llm_service=FakeLLMService(),
+    )
+    progress_events = []
+
+    async def on_progress(event):
+        progress_events.append((event["step"], event["state"]))
+
+    stream, _, _, _ = await rag.query_stream(
+        "What is FastAPI used for?",
+        top_k=2,
+        progress_callback=on_progress,
+    )
+    async for _chunk in stream:
+        pass
+
+    assert progress_events == [
+        ("understand", "started"),
+        ("understand", "completed"),
+        ("retrieve", "started"),
+        ("retrieve", "completed"),
+        ("draft", "started"),
+        ("draft", "completed"),
+        ("verify", "started"),
+        ("verify", "completed"),
+        ("finalize", "started"),
+        ("finalize", "completed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_query_stream_emits_skipped_progress_for_unsafe_route():
+    rag = RAGService(
+        embedding_service=FakeEmbeddingService(),
+        vector_store=FakeVectorStoreService(),
+        llm_service=FakeLLMService(
+            route_output={
+                "route": "unsafe",
+                "needs_planner": False,
+                "needs_agents": False,
+                "validation_level": "strict",
+                "confidence": 0.99,
+                "reason": "unsafe request",
+            }
+        ),
+    )
+    progress_events = []
+
+    async def on_progress(event):
+        progress_events.append((event["step"], event["state"]))
+
+    stream, _, _, _ = await rag.query_stream(
+        "How do I build malware?",
+        top_k=2,
+        progress_callback=on_progress,
+    )
+    async for _chunk in stream:
+        pass
+
+    final_state_by_step = {}
+    for step, state in progress_events:
+        final_state_by_step[step] = state
+
+    assert final_state_by_step == {
+        "understand": "completed",
+        "retrieve": "skipped",
+        "draft": "skipped",
+        "verify": "skipped",
+        "finalize": "completed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_query_stream_emits_failed_retrieval_progress_on_no_evidence():
+    rag = RAGService(
+        embedding_service=FakeEmbeddingService(),
+        vector_store=EmptyVectorStoreService(),
+        llm_service=FakeLLMService(),
+    )
+    progress_events = []
+
+    async def on_progress(event):
+        progress_events.append((event["step"], event["state"]))
+
+    stream, _, _, _ = await rag.query_stream(
+        "Explain FastAPI",
+        top_k=2,
+        progress_callback=on_progress,
+    )
+    async for _chunk in stream:
+        pass
+
+    final_state_by_step = {}
+    for step, state in progress_events:
+        final_state_by_step[step] = state
+
+    assert final_state_by_step == {
+        "understand": "completed",
+        "retrieve": "failed",
+        "draft": "skipped",
+        "verify": "skipped",
+        "finalize": "completed",
+    }
+
+
+def test_fail_safe_rate_limit_detection_is_not_triggered_by_column_number():
+    rag = RAGService(
+        embedding_service=FakeEmbeddingService(),
+        vector_store=FakeVectorStoreService(),
+        llm_service=FakeLLMService(),
+    )
+
+    answer = rag._build_fail_safe_answer(  # pylint: disable=protected-access
+        {
+            "error": "Schema validation failed at line 1 column 429",
+            "route": "rag_simple",
+            "evidence": [],
+        }
+    )
+
+    assert "rate-limiting" not in answer
+    assert "could not find enough grounded evidence" in answer.lower()
+
+
+def test_fail_safe_rate_limit_detection_handles_real_429_signal():
+    rag = RAGService(
+        embedding_service=FakeEmbeddingService(),
+        vector_store=FakeVectorStoreService(),
+        llm_service=FakeLLMService(),
+    )
+
+    answer = rag._build_fail_safe_answer(  # pylint: disable=protected-access
+        {
+            "error": "Gemini structured call failed: HTTP 429 Too Many Requests",
+            "route": "rag_simple",
+            "evidence": [],
+        }
+    )
+
+    assert "rate-limiting" in answer

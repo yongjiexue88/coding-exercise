@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
+import logging
 import re
 import time
 from datetime import datetime
-from typing import Any, AsyncIterator, Dict, List, Literal, Optional, TypedDict
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Literal, Optional, TypedDict
 from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
@@ -20,6 +22,12 @@ from services.embedding import EmbeddingService
 from services.evaluation_policy import EvaluationPolicyService
 from services.llm import LLMService, StructuredOutputError
 from services.vector_store import VectorStoreService
+
+logger = logging.getLogger(__name__)
+
+ProgressStep = Literal["understand", "retrieve", "draft", "verify", "finalize"]
+ProgressStatus = Literal["started", "completed", "failed", "skipped"]
+ProgressCallback = Callable[[dict[str, Any]], Any]
 
 
 class QueryState(TypedDict, total=False):
@@ -47,6 +55,8 @@ class QueryState(TypedDict, total=False):
     cost_usd: float
     eval_flags: Dict[str, Any]
     error: Optional[str]
+    _progress_timeline: Dict[str, str]
+    _progress_callback: Optional[ProgressCallback]
 
 
 class RAGService:
@@ -56,6 +66,13 @@ class RAGService:
     STRUCTURED_MAX_ATTEMPTS = 2
     FALLBACK_VALIDATION_LEVEL = "strict"
     TOOL_FAILURE_RATIO_LIMIT = 0.4
+    PROGRESS_LABELS: dict[ProgressStep, str] = {
+        "understand": "Understanding question",
+        "retrieve": "Finding relevant sources",
+        "draft": "Drafting answer",
+        "verify": "Verifying answer",
+        "finalize": "Finalizing response",
+    }
     _TOKEN_RE = re.compile(r"[a-zA-Z0-9]+")
     _STOP_WORDS = {
         "a",
@@ -120,10 +137,17 @@ class RAGService:
         }
 
     async def query_stream(
-        self, query: str, top_k: int = 3
+        self,
+        query: str,
+        top_k: int = 3,
+        progress_callback: ProgressCallback | None = None,
     ) -> tuple[AsyncIterator[str], list[SourceDocument], str, float]:
         """Run the same validated graph as /query and stream the final answer text."""
-        final_state, elapsed_ms = await self._run_graph(query=query, top_k=top_k)
+        final_state, elapsed_ms = await self._run_graph(
+            query=query,
+            top_k=top_k,
+            progress_callback=progress_callback,
+        )
         self._persist_query_observation(query=query, state=final_state, query_time_ms=elapsed_ms)
 
         model_name = f"gemini/{self.llm_service.current_model_name}"
@@ -181,8 +205,11 @@ class RAGService:
 
     async def _ingest_query(self, state: QueryState) -> Dict[str, Any]:
         started = time.time()
+        updates: dict[str, Any] = {}
+        await self._add_progress_update(state, updates, "understand", "started")
         result = {"query": state.get("query", "").strip()}
         return {
+            **updates,
             **result,
             "stage_latency_ms": self._append_stage_latency(
                 state, "ingest_query", (time.time() - started) * 1000
@@ -193,6 +220,7 @@ class RAGService:
         query = state.get("query", "")
         started = time.time()
         usage: dict[str, Any] = {}
+        updates: dict[str, Any] = {}
         try:
             if hasattr(self.llm_service, "route_query_with_metadata"):
                 route_result, usage = await self._call_structured_with_retry(
@@ -202,7 +230,12 @@ class RAGService:
             else:
                 route_result = await self._call_structured_with_retry(self.llm_service.route_query, query)
         except StructuredOutputError as exc:
+            await self._add_progress_update(state, updates, "understand", "failed")
+            await self._add_progress_update(state, updates, "retrieve", "skipped")
+            await self._add_progress_update(state, updates, "draft", "skipped")
+            await self._add_progress_update(state, updates, "verify", "skipped")
             return {
+                **updates,
                 "route": "system_error",
                 "route_confidence": 0.0,
                 "validator_decision": "fail_safe",
@@ -213,7 +246,12 @@ class RAGService:
                 ),
             }
         except Exception as exc:  # pragma: no cover - defensive
+            await self._add_progress_update(state, updates, "understand", "failed")
+            await self._add_progress_update(state, updates, "retrieve", "skipped")
+            await self._add_progress_update(state, updates, "draft", "skipped")
+            await self._add_progress_update(state, updates, "verify", "skipped")
             return {
+                **updates,
                 "route": "system_error",
                 "route_confidence": 0.0,
                 "validator_decision": "fail_safe",
@@ -241,8 +279,28 @@ class RAGService:
             validation_level = "strict"
 
         token_usage, cost_usd = self._accumulate_usage(state, usage)
+        await self._add_progress_update(state, updates, "understand", "completed")
+        if route == "unsafe":
+            await self._add_progress_update(
+                state, updates, "retrieve", "skipped", meta={"reason": "safety_policy"}
+            )
+            await self._add_progress_update(
+                state, updates, "draft", "skipped", meta={"reason": "safety_policy"}
+            )
+            await self._add_progress_update(
+                state, updates, "verify", "skipped", meta={"reason": "safety_policy"}
+            )
+        elif route in {"direct", "clarify"}:
+            await self._add_progress_update(
+                state,
+                updates,
+                "retrieve",
+                "skipped",
+                meta={"reason": "route_bypassed_retrieval"},
+            )
 
         return {
+            **updates,
             "route": route,
             "route_confidence": confidence,
             "token_usage": token_usage,
@@ -264,6 +322,8 @@ class RAGService:
 
         started = time.time()
         usage: dict[str, Any] = {}
+        updates: dict[str, Any] = {}
+        await self._add_progress_update(state, updates, "retrieve", "started")
         try:
             if hasattr(self.llm_service, "build_plan_with_metadata"):
                 plan, usage = await self._call_structured_with_retry(
@@ -282,7 +342,11 @@ class RAGService:
                     feedback=state.get("validator_feedback", []),
                 )
         except StructuredOutputError as exc:
+            await self._add_progress_update(state, updates, "retrieve", "failed")
+            await self._add_progress_update(state, updates, "draft", "skipped")
+            await self._add_progress_update(state, updates, "verify", "skipped")
             return {
+                **updates,
                 "validator_decision": "fail_safe",
                 "validator_feedback": ["Planner schema validation failed after retry."],
                 "error": str(exc),
@@ -291,7 +355,11 @@ class RAGService:
                 ),
             }
         except Exception as exc:  # pragma: no cover - defensive
+            await self._add_progress_update(state, updates, "retrieve", "failed")
+            await self._add_progress_update(state, updates, "draft", "skipped")
+            await self._add_progress_update(state, updates, "verify", "skipped")
             return {
+                **updates,
                 "validator_decision": "fail_safe",
                 "validator_feedback": ["Planner call failed."],
                 "error": str(exc),
@@ -301,7 +369,11 @@ class RAGService:
             }
 
         if not self._is_valid_plan(plan):
+            await self._add_progress_update(state, updates, "retrieve", "failed")
+            await self._add_progress_update(state, updates, "draft", "skipped")
+            await self._add_progress_update(state, updates, "verify", "skipped")
             return {
+                **updates,
                 "validator_decision": "fail_safe",
                 "validator_feedback": ["Planner returned malformed plan."],
                 "error": "Malformed plan despite schema call.",
@@ -312,6 +384,7 @@ class RAGService:
 
         token_usage, cost_usd = self._accumulate_usage(state, usage)
         return {
+            **updates,
             "plan": plan,
             "plan_version": state.get("plan_version", 0) + 1,
             "token_usage": token_usage,
@@ -325,7 +398,9 @@ class RAGService:
         if state.get("validator_decision") == "fail_safe":
             return {}
         if state.get("route") in {"direct", "clarify"}:
-            return {"tool_results": [], "evidence": []}
+            updates: dict[str, Any] = {}
+            await self._add_progress_update(state, updates, "retrieve", "skipped")
+            return {**updates, "tool_results": [], "evidence": []}
 
         started = time.time()
 
@@ -339,6 +414,7 @@ class RAGService:
         tool_failures = 0
         tool_results: list[dict[str, Any]] = []
         evidence = state.get("evidence", [])
+        updates: dict[str, Any] = {}
 
         for step in steps:
             tool = step.get("tool", "")
@@ -400,7 +476,11 @@ class RAGService:
                     }
                 )
                 if self._tool_failure_ratio(tool_failures, tool_calls) > self.TOOL_FAILURE_RATIO_LIMIT:
+                    await self._add_progress_update(state, updates, "retrieve", "failed")
+                    await self._add_progress_update(state, updates, "draft", "skipped")
+                    await self._add_progress_update(state, updates, "verify", "skipped")
                     return {
+                        **updates,
                         "validator_decision": "fail_safe",
                         "validator_feedback": ["Tool orchestrator circuit breaker triggered."],
                         "tool_results": tool_results,
@@ -417,7 +497,11 @@ class RAGService:
         if not evidence:
             retries_used = int(state.get("retries_used", 0))
             if retries_used >= self.MAX_RETRIES:
+                await self._add_progress_update(state, updates, "retrieve", "failed")
+                await self._add_progress_update(state, updates, "draft", "skipped")
+                await self._add_progress_update(state, updates, "verify", "skipped")
                 return {
+                    **updates,
                     "validator_decision": "fail_safe",
                     "validator_feedback": [
                         "Retrieval failed after max retry; switching to fail-safe response."
@@ -429,6 +513,7 @@ class RAGService:
                     ),
                 }
             return {
+                **updates,
                 "validator_decision": "replan",
                 "validator_feedback": ["No evidence retrieved; needs replan."],
                 "retries_used": retries_used + 1,
@@ -439,7 +524,15 @@ class RAGService:
                 ),
             }
 
+        await self._add_progress_update(
+            state,
+            updates,
+            "retrieve",
+            "completed",
+            meta={"sources": len(evidence)},
+        )
         return {
+            **updates,
             "validator_decision": "pass",
             "tool_results": tool_results,
             "evidence": evidence,
@@ -453,27 +546,35 @@ class RAGService:
             return {}
 
         started = time.time()
+        updates: dict[str, Any] = {}
+        await self._add_progress_update(state, updates, "draft", "started")
         context_docs = self._build_context_docs(state)
         feedback = state.get("validator_feedback", [])
 
         usage: dict[str, Any] = {}
-        if hasattr(self.llm_service, "generate_with_metadata"):
-            draft, usage = await self.llm_service.generate_with_metadata(
-                query=state.get("query", ""),
-                context_docs=context_docs,
-                route=state.get("route", "rag_simple"),
-                feedback=feedback,
-            )
-        else:
-            draft = await self.llm_service.generate(
-                query=state.get("query", ""),
-                context_docs=context_docs,
-                route=state.get("route", "rag_simple"),
-                feedback=feedback,
-            )
+        try:
+            if hasattr(self.llm_service, "generate_with_metadata"):
+                draft, usage = await self.llm_service.generate_with_metadata(
+                    query=state.get("query", ""),
+                    context_docs=context_docs,
+                    route=state.get("route", "rag_simple"),
+                    feedback=feedback,
+                )
+            else:
+                draft = await self.llm_service.generate(
+                    query=state.get("query", ""),
+                    context_docs=context_docs,
+                    route=state.get("route", "rag_simple"),
+                    feedback=feedback,
+                )
+        except Exception:
+            await self._add_progress_update(state, updates, "draft", "failed")
+            raise
 
         token_usage, cost_usd = self._accumulate_usage(state, usage)
+        await self._add_progress_update(state, updates, "draft", "completed")
         return {
+            **updates,
             "draft_answer": draft,
             "token_usage": token_usage,
             "cost_usd": cost_usd,
@@ -485,9 +586,12 @@ class RAGService:
             return {}
 
         started = time.time()
+        updates: dict[str, Any] = {}
+        await self._add_progress_update(state, updates, "verify", "started")
         route = state.get("route", "rag_simple")
         if route in {"direct", "clarify"}:
             return {
+                **updates,
                 "validator_scores": {"relevance": 1.0, "groundedness": 1.0, "completeness": 1.0},
                 "validator_decision": "pass",
                 "validator_feedback": [],
@@ -516,7 +620,9 @@ class RAGService:
                     validation_level=state.get("user_context", {}).get("validation_level", "basic"),
                 )
         except StructuredOutputError as exc:
+            await self._add_progress_update(state, updates, "verify", "failed")
             return {
+                **updates,
                 "validator_decision": "fail_safe",
                 "validator_feedback": ["Validator schema validation failed after retry."],
                 "error": str(exc),
@@ -525,7 +631,9 @@ class RAGService:
                 ),
             }
         except Exception as exc:  # pragma: no cover - defensive
+            await self._add_progress_update(state, updates, "verify", "failed")
             return {
+                **updates,
                 "validator_decision": "fail_safe",
                 "validator_feedback": ["Validator call failed."],
                 "error": str(exc),
@@ -536,6 +644,7 @@ class RAGService:
 
         token_usage, cost_usd = self._accumulate_usage(state, usage)
         return {
+            **updates,
             "validator_scores": {
                 "relevance": float(validator.get("relevance", 0.0)),
                 "groundedness": float(validator.get("groundedness", 0.0)),
@@ -552,9 +661,15 @@ class RAGService:
 
     async def _decision_node(self, state: QueryState) -> Dict[str, Any]:
         started = time.time()
+        updates: dict[str, Any] = {}
         decision = state.get("validator_decision", "replan")
         if decision in {"pass", "fail_safe"}:
+            if decision == "pass":
+                await self._add_progress_update(state, updates, "verify", "completed")
+            else:
+                await self._add_progress_update(state, updates, "verify", "failed")
             return {
+                **updates,
                 "stage_latency_ms": self._append_stage_latency(
                     state, "decision_node", (time.time() - started) * 1000
                 )
@@ -562,7 +677,9 @@ class RAGService:
 
         retries_used = state.get("retries_used", 0)
         if retries_used >= self.MAX_RETRIES:
+            await self._add_progress_update(state, updates, "verify", "failed")
             return {
+                **updates,
                 "validator_decision": "fail_safe",
                 "validator_feedback": [
                     "Validation failed after max retry; switching to fail-safe response."
@@ -573,7 +690,9 @@ class RAGService:
             }
 
         if decision not in {"revise", "replan"}:
+            await self._add_progress_update(state, updates, "verify", "failed")
             return {
+                **updates,
                 "validator_decision": "fail_safe",
                 "validator_feedback": ["Unknown validator decision."],
                 "stage_latency_ms": self._append_stage_latency(
@@ -590,8 +709,17 @@ class RAGService:
 
     async def _finalize_response(self, state: QueryState) -> Dict[str, Any]:
         started = time.time()
+        updates: dict[str, Any] = {}
+        await self._add_progress_update(state, updates, "finalize", "started")
+        merged_state: QueryState = {**state, **updates}
+        unresolved = self._resolve_progress_final_states(merged_state)
+        for step, status in unresolved.items():
+            await self._add_progress_update(state, updates, step, status)
+
         if state.get("validator_decision") == "fail_safe":
+            await self._add_progress_update(state, updates, "finalize", "completed")
             return {
+                **updates,
                 "final_answer": self._build_fail_safe_answer(state),
                 "stage_latency_ms": self._append_stage_latency(
                     state, "finalize_response", (time.time() - started) * 1000
@@ -601,8 +729,10 @@ class RAGService:
         final_answer = state.get("draft_answer", "").strip()
         if not final_answer:
             final_answer = self._build_fail_safe_answer(state)
+        await self._add_progress_update(state, updates, "finalize", "completed")
 
         return {
+            **updates,
             "final_answer": final_answer,
             "stage_latency_ms": self._append_stage_latency(
                 state, "finalize_response", (time.time() - started) * 1000
@@ -641,14 +771,22 @@ class RAGService:
         for idx in range(0, len(text), chunk_size):
             yield text[idx : idx + chunk_size]
 
-    async def _run_graph(self, query: str, top_k: int) -> tuple[QueryState, float]:
+    async def _run_graph(
+        self,
+        query: str,
+        top_k: int,
+        progress_callback: ProgressCallback | None = None,
+    ) -> tuple[QueryState, float]:
         start_time = time.time()
         policy = self.policy_service.get_runtime_policy()
         effective_top_k = max(top_k, policy.min_top_k)
 
         initial_state = self._new_state(query=query, top_k=effective_top_k)
         initial_state["eval_flags"] = policy.as_flags()
+        if progress_callback:
+            initial_state["_progress_callback"] = progress_callback
         final_state = await self.graph.ainvoke(initial_state)
+        final_state.pop("_progress_callback", None)
 
         elapsed_ms = (time.time() - start_time) * 1000
         final_state["latency_ms"] = round(elapsed_ms)
@@ -668,7 +806,9 @@ class RAGService:
 
     def _build_fail_safe_answer(self, state: QueryState) -> str:
         error_text = (state.get("error") or "").lower()
-        if "429" in error_text or "resource exhausted" in error_text:
+
+        if self._is_rate_limited_error(error_text):
+            logger.warning("Fail-safe classified as rate limit: %s", error_text[:400])
             return (
                 "The model provider is currently rate-limiting requests. "
                 "Please retry in a moment."
@@ -687,6 +827,19 @@ class RAGService:
             "I couldn't validate the answer with enough confidence after one retry. "
             "Please narrow the question and I can try again."
         )
+
+    def _is_rate_limited_error(self, error_text: str) -> bool:
+        if not error_text:
+            return False
+        if "resource exhausted" in error_text:
+            return True
+        if "too many requests" in error_text:
+            return True
+        if "rate limit" in error_text:
+            return True
+        if "quota exceeded" in error_text:
+            return True
+        return bool(re.search(r"(?:status(?:\\s*code)?|http)\\s*[:=]?\\s*429\\b", error_text))
 
     def _new_state(self, query: str, top_k: int) -> QueryState:
         return {
@@ -712,7 +865,101 @@ class RAGService:
             "eval_flags": {},
             "user_context": {},
             "error": None,
+            "_progress_timeline": {},
         }
+
+    async def _add_progress_update(
+        self,
+        state: QueryState,
+        updates: dict[str, Any],
+        step: ProgressStep,
+        status: ProgressStatus,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        merged_state: QueryState = {**state, **updates}
+        progress_update = await self._set_progress_state(merged_state, step, status, meta=meta)
+        updates.update(progress_update)
+
+    async def _set_progress_state(
+        self,
+        state: QueryState,
+        step: ProgressStep,
+        status: ProgressStatus,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        timeline = dict(state.get("_progress_timeline", {}))
+        current = timeline.get(step)
+        terminal_states = {"completed", "failed", "skipped"}
+
+        if current == status:
+            return {"_progress_timeline": timeline}
+        if current in terminal_states and status == "started":
+            return {"_progress_timeline": timeline}
+        if current in terminal_states and status in terminal_states:
+            return {"_progress_timeline": timeline}
+
+        timeline[step] = status
+        callback = state.get("_progress_callback")
+        if callback:
+            event: dict[str, Any] = {
+                "step": step,
+                "state": status,
+                "label": self.PROGRESS_LABELS[step],
+            }
+            if meta:
+                event["meta"] = meta
+
+            callback_result = callback(event)
+            if inspect.isawaitable(callback_result):
+                await callback_result
+
+        return {"_progress_timeline": timeline}
+
+    def _resolve_progress_final_states(self, state: QueryState) -> dict[ProgressStep, ProgressStatus]:
+        timeline = dict(state.get("_progress_timeline", {}))
+        route = state.get("route", "rag_simple")
+        decision = state.get("validator_decision", "pass")
+        evidence = state.get("evidence", [])
+        has_evidence = bool(evidence)
+        has_draft = bool((state.get("draft_answer") or "").strip())
+
+        resolved: dict[ProgressStep, ProgressStatus] = {}
+
+        def _resolve(step: ProgressStep, terminal_status: ProgressStatus) -> None:
+            current = timeline.get(step)
+            if current in {"completed", "failed", "skipped"}:
+                return
+            if current != terminal_status:
+                resolved[step] = terminal_status
+
+        _resolve("understand", "completed")
+
+        if route in {"unsafe", "direct", "clarify"}:
+            _resolve("retrieve", "skipped")
+        elif has_evidence:
+            _resolve("retrieve", "completed")
+        elif decision == "fail_safe":
+            _resolve("retrieve", "failed")
+        else:
+            _resolve("retrieve", "skipped")
+
+        if route == "unsafe":
+            _resolve("draft", "skipped")
+        elif has_draft:
+            _resolve("draft", "completed")
+        else:
+            _resolve("draft", "skipped")
+
+        if route == "unsafe" or not has_draft:
+            _resolve("verify", "skipped")
+        elif decision == "fail_safe":
+            _resolve("verify", "failed")
+        elif decision == "pass":
+            _resolve("verify", "completed")
+        else:
+            _resolve("verify", "skipped")
+
+        return resolved
 
     def _is_valid_plan(self, plan: Any) -> bool:
         if not isinstance(plan, dict):
