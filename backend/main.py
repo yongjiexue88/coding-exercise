@@ -4,48 +4,68 @@ from __future__ import annotations
 
 import json
 import time
+import asyncio
+import logging
+from uuid import UUID
 from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+
 from services.rag import RAGService
-from data.ingest import ingest
+from data.pipeline.jobs import JobManager, JobWorker
+from database import create_db_and_tables
+# Import models_ingest to ensure tables are created
+import models_ingest
+
 from models import (
     QueryRequest,
     QueryResponse,
-    IngestResponse,
+    IngestJobResponse,
     HealthResponse,
     DocumentInfo,
 )
 from config import settings
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Global RAG service instance
 rag_service: Optional[RAGService] = None
+job_worker: Optional[JobWorker] = None
+worker_task: Optional[asyncio.Task] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize services on startup."""
-    global rag_service
+    """Initialize services and worker on startup."""
+    global rag_service, job_worker, worker_task
+
+    # 1. Initialize DB Tables (including new ingestion tables)
+    create_db_and_tables()
+
+    # 2. Initialize RAG Service
     rag_service = RAGService()
-    
-    # Check if vector store is empty (typical for fresh Cloud Run instance)
-    if rag_service.vector_store.get_document_count() == 0:
-        print("🚀 Startup: Vector store is empty. Ingesting documents...")
-        ingest(reset=True)
-        # Re-initialize vector store to catch the new data
-        rag_service.vector_store = rag_service.vector_store.__class__()
-        print(f"✅ Startup: Ingestion complete. {rag_service.vector_store.get_document_count()} documents indexed.")
-    
+
+    # 3. Start Background Worker
+    job_worker = JobWorker(worker_id="api-worker-1")
+    worker_task = asyncio.create_task(job_worker.run_loop())
+
     yield
+
+    # Shutdown
+    if job_worker:
+        job_worker.running = False
+    if worker_task:
+        await worker_task
 
 
 app = FastAPI(
     title="RAG System API",
     description="Retrieval-Augmented Generation system with Gemini",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -64,7 +84,7 @@ app.add_middleware(
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check with model and index status."""
-    doc_count = rag_service.vector_store.get_document_count()
+    doc_count = rag_service.vector_store.get_document_count() if rag_service else 0
     return HealthResponse(
         status="healthy",
         active_model=f"gemini/{settings.gemini_model}",
@@ -130,29 +150,61 @@ async def query_stream(request: QueryRequest):
     )
 
 
+# --- Ingestion (Async) ---
+
+@app.post("/ingest", response_model=IngestJobResponse)
+async def start_ingestion():
+    """Start a background ingestion job (Async)."""
+    job_id = JobManager.create_job(payload={})
+    job = JobManager.get_job(job_id)
+    return IngestJobResponse(
+        job_id=str(job.id),
+        status=job.status,
+        created_at=job.created_at.isoformat()
+    )
+
+
+@app.get("/ingest/{job_id}", response_model=IngestJobResponse)
+async def get_ingestion_status(job_id: UUID):
+    """Check the status of an ingestion job."""
+    job = JobManager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return IngestJobResponse(
+        job_id=str(job.id),
+        status=job.status,
+        created_at=job.created_at.isoformat(),
+        error=job.error_details["message"] if job.error_details else None
+    )
+
+
+@app.post("/ingest/{job_id}/cancel")
+async def cancel_ingestion(job_id: UUID):
+    """Cancel a running or pending ingestion job."""
+    success = JobManager.cancel_job(job_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="Cannot cancel job (maybe completed/failed or not found)")
+    return {"status": "cancelled"}
+
+
+@app.post("/ingest/{job_id}/retry")
+async def retry_ingestion(job_id: UUID):
+    """Retry a failed ingestion job."""
+    success = JobManager.retry_job(job_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="Cannot retry job (must be in 'failed' state)")
+    return {"status": "retried", "job_id": str(job_id)}
+
+
 # --- Documents ---
 
 @app.get("/documents")
 async def list_documents():
     """List all indexed document sources."""
+    # This now queries the active run via VectorStoreService
     sources = rag_service.vector_store.get_all_sources()
     return [DocumentInfo(**s) for s in sources]
-
-
-@app.post("/ingest", response_model=IngestResponse)
-async def ingest_documents():
-    """Ingest documents from the data/documents directory."""
-    try:
-        stats = ingest(reset=True)
-        # Reinitialize vector store after ingestion
-        rag_service.vector_store = rag_service.vector_store.__class__()
-        return IngestResponse(
-            status="success",
-            documents_processed=stats["documents_processed"],
-            chunks_created=stats["chunks_created"],
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
 
 if __name__ == "__main__":

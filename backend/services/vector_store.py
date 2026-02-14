@@ -1,127 +1,115 @@
-"""Neon PostgreSQL vector store service."""
+"""Neon PostgreSQL vector store service using SQLModel and PgVector."""
 
 from __future__ import annotations
 
-import json
-import psycopg2
-from psycopg2.extras import Json
-from pgvector.psycopg2 import register_vector
-from config import settings
-
+from typing import List, Optional
+from sqlalchemy import text
+from sqlmodel import Session, select
+from models_ingest import IngestChunk, IngestChunkEmbedding, IngestDocument, CorpusState
+from database import engine
 
 class VectorStoreService:
-    """Service for managing document embeddings in Neon PostgreSQL."""
+    """Service for managing document embeddings in Neon PostgreSQL via SQLModel."""
 
     def __init__(self):
-        self.conn = psycopg2.connect(settings.database_url)
-        self.conn.autocommit = True
-        self._initialize_db()
+        self._ensure_extensions()
 
-    def _initialize_db(self):
-        """Initialize the database schema and extensions."""
-        with self.conn.cursor() as cur:
-            # Enable pgvector extension
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            
-            # Create table for document chunks
-            # Use 768 dimensions to match EmbeddingService output_dimensionality.
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS document_chunks (
-                    id SERIAL PRIMARY KEY,
-                    doc_id TEXT,
-                    content TEXT,
-                    embedding vector(768),
-                    source TEXT,
-                    metadata JSONB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Create HNSW index for faster similarity search
-            # This is optional but recommended for performance as data grows
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS embedding_idx 
-                ON document_chunks 
-                USING hnsw (embedding vector_cosine_ops)
-            """)
-            
-        register_vector(self.conn)
-
-    def add_documents(
-        self,
-        ids: list[str],
-        embeddings: list[list[float]],
-        documents: list[str],
-        metadatas: list[dict],
-    ) -> None:
-        """Add document chunks with embeddings to the vector store."""
-        with self.conn.cursor() as cur:
-            for i in range(len(ids)):
-                cur.execute(
-                    """
-                    INSERT INTO document_chunks (doc_id, content, embedding, source, metadata) 
-                    VALUES (%s, %s, %s, %s, %s)
-                    """,
-                    (
-                        ids[i],
-                        documents[i],
-                        embeddings[i],
-                        metadatas[i].get("source", "unknown"),
-                        Json(metadatas[i])
-                    )
-                )
+    def _ensure_extensions(self):
+        """Ensure pgvector extension exists."""
+        with Session(engine) as session:
+            session.exec(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            session.commit()
 
     def search(
-        self, query_embedding: list[float], top_k: int = 3
+        self,
+        query_embedding: List[float],
+        top_k: int = 3,
+        corpus_name: str = "default"
     ) -> dict:
-        """Search for similar documents using a query embedding.
+        """Search for similar chunks in the *active* ingestion run.
 
-        Returns retrieval results in the shape expected by RAGService.
+        Performs a join:
+        Embedding -> Chunk -> Document -> Run (via CorpusState active_run_id)
         """
-        with self.conn.cursor() as cur:
-            # Using <=> operator for cosine distance (0 = identical, 1 = opposite)
-            cur.execute("""
-                SELECT content, source, metadata, embedding <=> %s::vector as distance
-                FROM document_chunks
+        with Session(engine) as session:
+            # SQLModel doesn't support vector operators in pure python syntax easily yet,
+            # so we use a text() construct for the cosine distance ordering.
+            # We select strictly from the active run for this corpus.
+
+            stmt = text("""
+                SELECT
+                    c.content,
+                    d.source_id,
+                    c.metadata_json,
+                    e.embedding <=> :embedding AS distance
+                FROM ingest_chunk_embedding e
+                JOIN ingest_chunk c ON e.chunk_id = c.id
+                JOIN ingest_document d ON c.document_id = d.id
+                JOIN corpus_state cs ON d.run_id = cs.active_run_id
+                WHERE cs.corpus_name = :corpus_name
                 ORDER BY distance ASC
-                LIMIT %s
-            """, (query_embedding, top_k))
-            
-            rows = cur.fetchall()
-            
-            if not rows:
+                LIMIT :top_k
+            """)
+
+            results = session.exec(
+                stmt,
+                params={
+                    "embedding": str(query_embedding), # pgvector expects string representation or array
+                    "corpus_name": corpus_name,
+                    "top_k": top_k
+                }
+            ).fetchall()
+
+            # Format results for RAGService
+            if not results:
                 return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
 
-            # Keep a stable response format for downstream RAG processing.
+            current_docs = []
+            current_metas = []
+            current_dists = []
+
+            for row in results:
+                content, source, meta, dist = row
+                current_docs.append(content)
+                # Merge explicit source_id with other metadata
+                if meta is None: meta = {}
+                meta["source"] = source
+                current_metas.append(meta)
+                current_dists.append(float(dist))
+
             return {
-                "documents": [[r[0] for r in rows]],
-                "metadatas": [[r[2] for r in rows]],
-                "distances": [[float(r[3]) for r in rows]]
+                "documents": [current_docs],
+                "metadatas": [current_metas],
+                "distances": [current_dists]
             }
 
-    def get_document_count(self) -> int:
-        """Get the total number of chunks in the collection."""
-        with self.conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM document_chunks")
-            return cur.fetchone()[0]
-
-    def get_all_sources(self) -> list[dict]:
-        """Get a summary of all indexed document sources."""
-        with self.conn.cursor() as cur:
-            cur.execute("""
-                SELECT source, COUNT(*) as chunk_count
-                FROM document_chunks
-                GROUP BY source
-                ORDER BY source
+    def get_document_count(self, corpus_name: str = "default") -> int:
+        """Get the total number of chunks in the active run."""
+        with Session(engine) as session:
+            stmt = text("""
+                SELECT COUNT(*)
+                FROM ingest_chunk c
+                JOIN ingest_document d ON c.document_id = d.id
+                JOIN corpus_state cs ON d.run_id = cs.active_run_id
+                WHERE cs.corpus_name = :corpus_name
             """)
-            rows = cur.fetchall()
-            
-        return [
-            {"source": row[0], "chunk_count": row[1]}
-            for row in rows
-        ]
+            return session.exec(stmt, params={"corpus_name": corpus_name}).one()
 
-    def reset(self) -> None:
-        """Delete all data in the table."""
-        with self.conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE document_chunks")
+    def get_all_sources(self, corpus_name: str = "default") -> List[dict]:
+        """Get a summary of all indexed sources in the active run."""
+        with Session(engine) as session:
+            stmt = text("""
+                SELECT d.source_id, COUNT(*) as chunk_count
+                FROM ingest_chunk c
+                JOIN ingest_document d ON c.document_id = d.id
+                JOIN corpus_state cs ON d.run_id = cs.active_run_id
+                WHERE cs.corpus_name = :corpus_name
+                GROUP BY d.source_id
+                ORDER BY d.source_id
+            """)
+            results = session.exec(stmt, params={"corpus_name": corpus_name}).fetchall()
+
+            return [
+                {"source": row[0], "chunk_count": row[1]}
+                for row in results
+            ]

@@ -22,7 +22,7 @@ flowchart TB
     end
 
     subgraph Data["Data Layer"]
-        DOCS["Source Documents<br/>.md files"]
+        DOCS["Source Documents<br/>JSON now, multi-format later"]
         NEON[("Neon PostgreSQL<br/>Relational + pgvector")]
     end
 
@@ -42,6 +42,69 @@ flowchart TB
     style Backend fill:#16213e,stroke:#3b82f6,color:#fff
     style Data fill:#0f3460,stroke:#10b981,color:#fff
 ```
+
+## End-to-End Flow (Roadmap)
+
+```mermaid
+flowchart TD
+    A["Data Sources"] --> B["Data Processing<br/>parse -> chunk -> metadata"]
+    B --> C["Database Layer<br/>Vector + Relational"]
+    C --> D["User Query"]
+    D --> E["Reasoning Engine<br/>plan + route + tools"]
+    E --> F["Multi-Agent System"]
+    F --> G["Database Retrieval"]
+    G --> H["Human Validation (optional)"]
+    H --> I["Evaluation Layer"]
+    I -. feedback loop .-> A
+```
+
+### Implementation Status
+
+- [x] Data Sources
+- [x] Data Processing (parse -> chunk -> metadata)
+- [x] Database Layer (Vector + Relational)
+- [x] User Query (normalize + validate input)
+- [ ] Reasoning Engine (plan + route + tools)
+- [ ] Multi-Agent System
+- [ ] Database Retrieval (agentic retrieval loop)
+- [ ] Human Validation (optional)
+- [ ] Evaluation Layer + feedback loop
+
+### Data Sources & Processing (Current Milestone)
+
+- **Status**: ✅ Completed for current scope
+- **Current source**: `backend/data/documents/SQuAD-v1.1.json`
+- **Processing flow**:
+  1. Parse source file
+  2. Split content into chunks
+  3. Attach metadata per chunk
+  4. Send chunks to embedding + database ingestion path
+- **Notes**: This milestone is intentionally scoped to data input and processing only. Remaining layers are planned for future milestones.
+
+### User Query (Current Guard)
+
+- **Status**: ✅ Basic guard implemented
+- **What is implemented now**:
+  1. Normalize input by trimming and collapsing repeated whitespace
+  2. Reject empty or whitespace-only query input
+  3. Keep explicit request bounds (`max_length=1000`, `top_k` range)
+- **Implementation**: `backend/services/query_guard.py` + `QueryRequest` validator in `backend/models.py`
+- **Scope note**: Rate limits, intent gating, and confidence thresholds are planned in later milestones.
+
+## Database Layer
+
+The system uses a **Hybrid RAG** storage architecture, leveraging **Neon PostgreSQL** for both vector and relational data.
+
+### 1. Vector Store (Embedding Retrieval)
+- **Implementation**: Neon PostgreSQL with `pgvector` extension.
+- **Purpose**: High-performance similarity search for document chunks.
+- **Index**: HNSW (Hierarchical Navigable Small World) for efficient approximate nearest neighbor search.
+- **Dimensionality**: 768 (matching Gemini Embedding 001).
+
+### 2. Relational Database (Future Proofing)
+- **Status**: Provisioned but currently minimal usage.
+- **Capabilities**: Ready for structured metadata, queryable logs, and application state.
+- **Current State**: The system is designed to be easily extensible to store chat history, user feedback, and detailed telemetry in relational tables side-by-side with the vectors.
 
 ### Key Features
 
@@ -217,27 +280,35 @@ coding-exercise/
 │   ├── main.py                  # FastAPI endpoints (query, stream, ingest, health)
 │   ├── config.py                # Pydantic settings from .env
 │   ├── models.py                # Request/response schemas
+│   ├── models_sql.py            # SQLModel schema definitions
+│   ├── database.py              # Database connection logic
 │   ├── Dockerfile               # Multi-stage backend container
 │   ├── deploy.sh                # Manual Cloud Run deploy script
 │   ├── requirements.txt         # Python dependencies (dev)
 │   ├── requirements-prod.txt    # Python dependencies (production)
+│   ├── check_embedding_dim.py   # Embedding dimension validator
 │   ├── .env.example             # Environment variable template
 │   ├── .dockerignore            # Docker build exclusions
 │   ├── services/
 │   │   ├── embedding.py         # Gemini embedding service (gemini-embedding-001)
 │   │   ├── vector_store.py      # Neon PostgreSQL pgvector operations
 │   │   ├── llm.py               # Gemini LLM integration + strict structured output helpers
+│   │   ├── query_guard.py       # User-query normalization and validation helpers
 │   │   └── rag.py               # LangGraph RAG pipeline orchestration
 │   ├── data/
 │   │   ├── ingest.py            # Document chunking & ingestion
-│   │   └── documents/           # Source .md files (knowledge base)
+│   │   ├── ingest_squad.py      # SQuAD dataset ingestion
+│   │   ├── verify_ingestion.py  # Ingestion verification script
+│   │   └── documents/           # Source files (currently JSON corpus)
 │   ├── evaluation/
 │   │   ├── evaluate.py          # Evaluation runner
 │   │   ├── metrics.py           # Precision, recall, faithfulness metrics
 │   │   └── test_queries.json    # 12 curated test queries
 │   └── tests/
+│       ├── conftest.py          # Pytest fixtures
 │       ├── test_api.py          # API integration tests
 │       ├── test_rag.py          # RAG evaluation tests
+│       ├── test_rag_pipeline.py # RAG pipeline tests
 │       └── test_vector_store.py # Vector store unit tests
 ├── frontend/
 │   ├── index.html               # Entry point
@@ -255,7 +326,7 @@ coding-exercise/
 │           ├── ChatInterface.jsx   # Message list + empty state
 │           ├── Message.jsx         # Individual message rendering
 │           ├── QueryInput.jsx      # Auto-resizing textarea input
-│           └── SourceDocuments.jsx  # Retrieved sources panel
+│           └── SourceDocuments.jsx # Retrieved sources panel
 ├── .github/
 │   └── workflows/
 │       ├── deploy-backend.yml   # CI/CD: Backend → Cloud Run

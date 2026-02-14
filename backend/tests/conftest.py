@@ -1,23 +1,20 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+
+async def _noop_run_loop(self):
+    return None
+
+
 @pytest.fixture(autouse=True)
 def mock_db_connection():
-    """Mock database connection globally to prevent integration attempts."""
-    with patch("psycopg2.connect") as mock_connect, \
-         patch("services.vector_store.register_vector") as mock_register, \
-         patch("services.rag.VectorStoreService") as mock_vss:
-        
-        # Setup mock connection
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_connect.return_value = mock_conn
-        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
-        
-        # Setup VectorStoreService mock to behave like a dict-like store if needed, 
-        # or just let it return None for methods to avoid errors in simple instantiations.
-        # But for RAG service tests, we might want FakeVectorStoreService to take precedence.
-        # Since RAG tests use dependency injection, this generic patch mainly protects 
-        # API endpoints that might instantiate default services.
-        
-        yield mock_connect
+    """Mock runtime dependencies for tests that should avoid real DB side effects."""
+    mock_store = MagicMock()
+    mock_store.get_document_count.return_value = 0
+    mock_store.get_all_sources.return_value = []
+    mock_store.search.return_value = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    with patch("main.create_db_and_tables"), \
+         patch("services.rag.VectorStoreService", return_value=mock_store), \
+         patch("data.pipeline.jobs.JobWorker.run_loop", new=_noop_run_loop):
+        yield mock_store

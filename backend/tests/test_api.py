@@ -41,6 +41,11 @@ class TestQueryEndpoint:
         response = client.post("/query", json={"query": ""})
         assert response.status_code == 422
 
+    def test_query_validation_rejects_whitespace_only_query(self, client):
+        """Test request validation rejects whitespace-only query."""
+        response = client.post("/query", json={"query": "   \n\t  "})
+        assert response.status_code == 422
+
 
 class TestDocumentsEndpoint:
     def test_list_documents(self, client):

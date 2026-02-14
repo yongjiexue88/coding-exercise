@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
+from services.query_guard import normalize_and_validate_query
 
 
 class QueryRequest(BaseModel):
     """Request body for RAG query endpoints."""
     query: str = Field(..., min_length=1, max_length=1000, description="The user's question")
     top_k: int = Field(default=3, ge=1, le=10, description="Number of documents to retrieve")
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def normalize_query(cls, value: object) -> str:
+        """Normalize query text and reject blank/whitespace-only input."""
+        return normalize_and_validate_query(value)
 
 
 class SourceDocument(BaseModel):
@@ -45,3 +52,11 @@ class HealthResponse(BaseModel):
     status: str
     active_model: str
     documents_indexed: int
+
+
+class IngestJobResponse(BaseModel):
+    """Response for ingestion job status."""
+    job_id: str
+    status: str
+    created_at: str
+    error: Optional[str] = None

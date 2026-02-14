@@ -24,6 +24,35 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect ingest-impacting changes
+        id: ingest_changes
+        run: |
+          set -euo pipefail
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          # For first push events (or if before SHA is unavailable), default to ingest.
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "ingest_required=true" >> "$GITHUB_OUTPUT"
+            echo "reason=missing_before_sha" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED_FILES="$(git diff --name-only "$BEFORE" "$AFTER")"
+          echo "Changed files since $BEFORE..$AFTER:"
+          echo "$CHANGED_FILES"
+
+          if echo "$CHANGED_FILES" | grep -E -q '^(backend/data/documents/|backend/data/pipeline/|backend/models_ingest\.py$|backend/services/embedding\.py$)'; then
+            echo "ingest_required=true" >> "$GITHUB_OUTPUT"
+            echo "reason=ingest_related_changes" >> "$GITHUB_OUTPUT"
+          else
+            echo "ingest_required=false" >> "$GITHUB_OUTPUT"
+            echo "reason=no_ingest_related_changes" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -62,3 +91,65 @@ jobs:
             --set-env-vars "GEMINI_MODEL=gemini-2.0-flash" \
             --set-env-vars "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" \
             --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }}"
+
+      - name: Resolve backend URL
+        id: backend_url
+        run: |
+          URL="$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" --format='value(status.url)')"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Cloud Run URL: $URL"
+
+      - name: Trigger and monitor ingestion
+        if: steps.ingest_changes.outputs.ingest_required == 'true'
+        run: |
+          set -euo pipefail
+
+          API_URL="${{ steps.backend_url.outputs.url }}"
+          echo "Ingestion required (${{ steps.ingest_changes.outputs.reason }})"
+          echo "Triggering: ${API_URL}/ingest"
+
+          RESPONSE="$(curl -sS -X POST "${API_URL}/ingest")"
+          echo "Ingest start response: $RESPONSE"
+
+          JOB_ID="$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('job_id',''))")"
+          if [ -z "$JOB_ID" ]; then
+            echo "Failed to parse job_id from /ingest response."
+            exit 1
+          fi
+
+          ATTEMPTS=72   # 12 minutes at 10s interval
+          INTERVAL=10
+
+          for i in $(seq 1 "$ATTEMPTS"); do
+            STATUS_JSON="$(curl -sS "${API_URL}/ingest/${JOB_ID}")"
+            STATUS="$(echo "$STATUS_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))")"
+            ERROR_MSG="$(echo "$STATUS_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('error',''))")"
+
+            echo "Attempt ${i}/${ATTEMPTS}: status=${STATUS}"
+
+            case "$STATUS" in
+              completed)
+                echo "Ingestion completed successfully."
+                exit 0
+                ;;
+              failed|cancelled)
+                echo "Ingestion failed with status=${STATUS}. Error: ${ERROR_MSG}"
+                exit 1
+                ;;
+              pending|processing)
+                sleep "$INTERVAL"
+                ;;
+              *)
+                echo "Unexpected status payload: ${STATUS_JSON}"
+                sleep "$INTERVAL"
+                ;;
+            esac
+          done
+
+          echo "Timed out waiting for ingest job ${JOB_ID}"
+          exit 1
+
+      - name: Skip ingestion
+        if: steps.ingest_changes.outputs.ingest_required != 'true'
+        run: |
+          echo "Skipping ingest (${{ steps.ingest_changes.outputs.reason }})."
