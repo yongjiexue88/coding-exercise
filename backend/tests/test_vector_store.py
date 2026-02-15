@@ -5,9 +5,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from models_ingest import CorpusState, IngestChunk, IngestChunkEmbedding, IngestDocument, IngestRun
 from services.vector_store import VectorStoreService
 
 
@@ -89,3 +91,70 @@ def test_get_all_sources_formats_rows(mock_session_cls, _mock_init):
         {"source": "SQuAD-small.json", "chunk_count": 128},
         {"source": "extra.json", "chunk_count": 12},
     ]
+
+
+@patch.object(VectorStoreService, "_ensure_extensions", return_value=None)
+@patch("services.vector_store.Session")
+def test_reset_creates_new_active_run(mock_session_cls, _mock_init):
+    """Legacy reset should rotate corpus_state to a fresh run."""
+    session = mock_session_cls.return_value.__enter__.return_value
+    previous_run_id = uuid4()
+    state = CorpusState(corpus_name="default", active_run_id=previous_run_id)
+    previous_run = IngestRun(id=previous_run_id, corpus_name="default", status="ready")
+
+    def get_side_effect(model_cls, key):
+        if model_cls is CorpusState and key == "default":
+            return state
+        if model_cls is IngestRun and key == previous_run_id:
+            return previous_run
+        return None
+
+    session.get.side_effect = get_side_effect
+
+    store = VectorStoreService()
+    store.reset()
+
+    assert previous_run.status == "archived"
+    added = [call.args[0] for call in session.add.call_args_list]
+    assert any(isinstance(obj, IngestRun) and obj.id != previous_run_id for obj in added)
+    assert any(isinstance(obj, CorpusState) for obj in added)
+    session.commit.assert_called_once()
+
+
+@patch.object(VectorStoreService, "_ensure_extensions", return_value=None)
+@patch("services.vector_store.Session")
+def test_add_documents_legacy_compat_inserts_rows(mock_session_cls, _mock_init):
+    """Legacy add_documents API should still ingest chunks + embeddings."""
+    session = mock_session_cls.return_value.__enter__.return_value
+    active_run_id = uuid4()
+    state = CorpusState(corpus_name="default", active_run_id=active_run_id)
+    active_run = IngestRun(id=active_run_id, corpus_name="default", status="ready")
+
+    def get_side_effect(model_cls, key):
+        if model_cls is CorpusState and key == "default":
+            return state
+        if model_cls is IngestRun and key == active_run_id:
+            return active_run
+        return None
+
+    session.get.side_effect = get_side_effect
+    session.exec.return_value.first.return_value = None
+
+    store = VectorStoreService()
+    store.add_documents(
+        ids=["legacy-chunk-id"],
+        embeddings=[[0.1, 0.2, 0.3]],
+        documents=["Legacy content"],
+        metadatas=[{"source": "legacy.md", "chunk_index": "7"}],
+    )
+
+    added = [call.args[0] for call in session.add.call_args_list]
+    inserted_doc = next(obj for obj in added if isinstance(obj, IngestDocument))
+    inserted_chunk = next(obj for obj in added if isinstance(obj, IngestChunk))
+    inserted_embedding = next(obj for obj in added if isinstance(obj, IngestChunkEmbedding))
+
+    assert inserted_doc.source_id == "legacy.md"
+    assert inserted_chunk.chunk_index == 7
+    assert inserted_chunk.metadata_json["legacy_id"] == "legacy-chunk-id"
+    assert inserted_embedding.embedding == [0.1, 0.2, 0.3]
+    session.commit.assert_called_once()

@@ -224,11 +224,16 @@ uvicorn main:app --reload
 ```bash
 cd frontend
 npm install
+# Optional: override API base for direct backend URL deployments
+# export VITE_API_BASE=https://your-backend-host
 npm run dev
 # ✅ Frontend running at http://localhost:5173
 ```
 
-> **Note:** The frontend proxies API requests to `http://localhost:8000` automatically via Vite config.
+> **Note:** Frontend requests default to `/api`.
+> - Local dev (Vite): `/api` is proxied to `http://localhost:8000`
+> - Docker (Nginx): `/api` is proxied to `http://backend:8000`
+> - Direct-backend deployments: set `VITE_API_BASE` at build time
 
 ---
 
@@ -271,7 +276,7 @@ The project includes a custom evaluation framework located in `backend/evaluatio
 
 ### 1. Running Evaluations
 
-Run limits or full sweeps using the runner:
+Run limits or full sweeps using the runner CLI entrypoint:
 
 ```bash
 cd backend
@@ -281,6 +286,8 @@ python -m evaluation.runner --mode full_rag_with_judges --top-k 5 --limit 10
 # Run retrieval-only (faster, for experimenting with embeddings/chunking)
 python -m evaluation.runner --mode retrieval_only --top-k 5
 ```
+
+> You can also use `python -m evaluation.evaluate ...`; both entrypoints call the same evaluation runner.
 
 ### 2. Checking Quality Gates
 
@@ -326,8 +333,11 @@ All runs generate artifacts in `backend/evaluation/reports/`:
 ## Running Tests
 
 ```bash
+# From repo root (recommended)
+python -m pytest backend/tests -v
+
+# Or from backend/
 cd backend
-pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 

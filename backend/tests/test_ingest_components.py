@@ -1,9 +1,12 @@
 """Unit tests for ingestion pipeline components."""
 
-import json
+import sys
 from pathlib import Path
-from backend.data.pipeline.parser import SQuADJsonParser
-from backend.data.pipeline.chunker import SQuADChunker
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from data.pipeline.chunker import SQuADChunker
+from data.pipeline.parser import SQuADJsonParser
 
 TEST_FILE = Path(__file__).parent / "data" / "test_squad.json"
 

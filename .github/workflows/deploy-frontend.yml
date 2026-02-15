@@ -32,6 +32,8 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          VITE_API_BASE: ${{ secrets.FRONTEND_API_BASE }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2

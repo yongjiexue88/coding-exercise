@@ -12,6 +12,7 @@ venv/
 # Environment
 .env
 backend/.env
+frontend/.env.local
 **/gcp-sa-key.json
 frontend/.firebase/
 
@@ -35,4 +36,3 @@ Thumbs.db
 
 # Evaluation output
 evaluation_results.json
-

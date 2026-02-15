@@ -1,10 +1,16 @@
 """Unit tests for JobManager."""
 
+import sys
 import uuid
+from pathlib import Path
 from unittest.mock import MagicMock, patch
-from backend.data.pipeline.jobs import JobManager, IngestJob
 
-@patch("backend.data.pipeline.jobs.Session")
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from data.pipeline.jobs import JobManager, IngestJob
+
+
+@patch("data.pipeline.jobs.Session")
 def test_create_job(mock_session_cls):
     mock_session = mock_session_cls.return_value.__enter__.return_value
     
@@ -26,7 +32,8 @@ def test_create_job(mock_session_cls):
     assert job.payload == {"foo": "bar"}
     assert job.status == "pending"
 
-@patch("backend.data.pipeline.jobs.Session")
+
+@patch("data.pipeline.jobs.Session")
 def test_cancel_job_success(mock_session_cls):
     mock_session = mock_session_cls.return_value.__enter__.return_value
     
@@ -40,7 +47,8 @@ def test_cancel_job_success(mock_session_cls):
     assert job.status == "cancelled"
     mock_session.commit.assert_called_once()
 
-@patch("backend.data.pipeline.jobs.Session")
+
+@patch("data.pipeline.jobs.Session")
 def test_cancel_job_failure(mock_session_cls):
     mock_session = mock_session_cls.return_value.__enter__.return_value
     
