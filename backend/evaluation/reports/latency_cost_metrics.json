@@ -1,0 +1,52 @@
+{
+  "run_id": "eval_20260215_231639_d2d044f5",
+  "mode": "full_rag_with_judges",
+  "summary": {
+    "p50_ms": 3654.44,
+    "p95_ms": 3986.96,
+    "p99_ms": 4016.52,
+    "avg_ms": 3654.44,
+    "avg_cost_usd": 0.0008336,
+    "avg_prompt_tokens": 2612.0,
+    "avg_completion_tokens": 20.0,
+    "avg_total_tokens": 2632.0
+  },
+  "results": [
+    {
+      "sample_id": "squad-56be4db0acb8001400a502ec",
+      "split": "dev",
+      "query": "Which NFL team represented the AFC at Super Bowl 50?",
+      "perf": {
+        "total_latency_ms": 3284.97,
+        "retrieval_latency_ms": 632.55,
+        "llm_latency_ms": 570.35,
+        "prompt_tokens": 2607,
+        "completion_tokens": 22,
+        "total_tokens": 2629,
+        "cost_usd": 0.0008371,
+        "stage_latency_ms": {
+          "retrieval": 632.55,
+          "llm": 570.35
+        }
+      }
+    },
+    {
+      "sample_id": "squad-56be4db0acb8001400a502ed",
+      "split": "dev",
+      "query": "Which NFL team represented the NFC at Super Bowl 50?",
+      "perf": {
+        "total_latency_ms": 4023.91,
+        "retrieval_latency_ms": 489.27,
+        "llm_latency_ms": 666.19,
+        "prompt_tokens": 2617,
+        "completion_tokens": 18,
+        "total_tokens": 2635,
+        "cost_usd": 0.0008301,
+        "stage_latency_ms": {
+          "retrieval": 489.27,
+          "llm": 666.19
+        }
+      }
+    }
+  ]
+}

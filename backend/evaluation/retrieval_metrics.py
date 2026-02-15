@@ -12,11 +12,23 @@ def _norm(values: Iterable[str]) -> list[str]:
     return [v.strip() for v in values if isinstance(v, str) and v.strip()]
 
 
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    """Deduplicate while preserving first-seen ranking order."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
 def precision_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float:
     """Precision@k = relevant retrieved in top-k / k."""
     if k <= 0:
         return 0.0
-    top_k = _norm(retrieved_ids[:k])
+    top_k = _unique_preserve_order(_norm(retrieved_ids[:k]))
     if not top_k:
         return 0.0
     rel = set(_norm(relevant_ids))
@@ -29,8 +41,8 @@ def recall_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> fl
     rel = set(_norm(relevant_ids))
     if not rel:
         return 0.0
-    top_k = _norm(retrieved_ids[:k])
-    hits = sum(1 for rid in top_k if rid in rel)
+    top_k = _unique_preserve_order(_norm(retrieved_ids[:k]))
+    hits = len(set(top_k) & rel)
     return hits / len(rel)
 
 
@@ -39,7 +51,7 @@ def mrr_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float
     rel = set(_norm(relevant_ids))
     if not rel:
         return 0.0
-    for idx, rid in enumerate(_norm(retrieved_ids[:k]), start=1):
+    for idx, rid in enumerate(_unique_preserve_order(_norm(retrieved_ids[:k])), start=1):
         if rid in rel:
             return 1.0 / idx
     return 0.0
@@ -62,7 +74,7 @@ def ndcg_at_k(
     graded = graded_relevance or {rid: 1.0 for rid in rel}
 
     dcg = 0.0
-    for rank, rid in enumerate(_norm(retrieved_ids[:k]), start=1):
+    for rank, rid in enumerate(_unique_preserve_order(_norm(retrieved_ids[:k])), start=1):
         gain = float(graded.get(rid, 0.0))
         if gain > 0:
             dcg += gain / math.log2(rank + 1)
@@ -105,12 +117,13 @@ def compute_retrieval_metrics(
     """Compute all retrieval metrics for one sample."""
     graded = build_graded_relevance(gold_doc_ids, gold_chunk_refs)
     relevant_ids = list(graded.keys())
+    retrieved_unique = _unique_preserve_order(_norm(retrieved_doc_ids))
 
     return RetrievalMetrics(
         k=k,
-        precision_at_k=precision_at_k(retrieved_doc_ids, relevant_ids, k),
-        recall_at_k=recall_at_k(retrieved_doc_ids, relevant_ids, k),
-        mrr_at_k=mrr_at_k(retrieved_doc_ids, relevant_ids, k),
-        ndcg_at_k=ndcg_at_k(retrieved_doc_ids, relevant_ids, k, graded_relevance=graded),
-        retrieved_doc_ids=_norm(retrieved_doc_ids[:k]),
+        precision_at_k=precision_at_k(retrieved_unique, relevant_ids, k),
+        recall_at_k=recall_at_k(retrieved_unique, relevant_ids, k),
+        mrr_at_k=mrr_at_k(retrieved_unique, relevant_ids, k),
+        ndcg_at_k=ndcg_at_k(retrieved_unique, relevant_ids, k, graded_relevance=graded),
+        retrieved_doc_ids=retrieved_unique[:k],
     )

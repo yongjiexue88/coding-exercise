@@ -30,7 +30,7 @@ from services.llm import LLMService
 from services.vector_store import VectorStoreService
 
 
-DATASET_DEFAULT = Path(__file__).parent / "datasets" / "eval_v1.jsonl"
+DATASET_DEFAULT = Path(__file__).parent / "datasets" / "eval_squad_v1.jsonl"
 REPORTS_DIR = Path(__file__).parent / "reports"
 
 

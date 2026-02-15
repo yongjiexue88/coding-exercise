@@ -1,5 +1,11 @@
+import os
 import pytest
 from unittest.mock import MagicMock, patch
+
+
+# Set dummy DATABASE_URL for tests if not present, to avoid ValueError in database.py
+if "DATABASE_URL" not in os.environ:
+    os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/testdb"
 
 
 async def _noop_run_loop(self):

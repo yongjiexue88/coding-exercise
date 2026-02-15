@@ -1,0 +1,136 @@
+{
+  "run_id": "eval_20260215_231639_d2d044f5",
+  "mode": "full_rag_with_judges",
+  "summary": {
+    "avg_groundedness": 1.0,
+    "avg_quality": 1.0,
+    "hallucination_rate": 0.0,
+    "uncertainty_rate": 0.0
+  },
+  "results": [
+    {
+      "sample_id": "squad-56be4db0acb8001400a502ec",
+      "split": "dev",
+      "query": "Which NFL team represented the AFC at Super Bowl 50?",
+      "answer_metrics": {
+        "groundedness": 1.0,
+        "quality": 1.0,
+        "hallucination": false,
+        "uncertainty": false
+      },
+      "judge_outputs": {
+        "groundedness": {
+          "name": "groundedness",
+          "output": {
+            "score": 1.0,
+            "decision": "pass",
+            "error_type": "none",
+            "citations": [
+              {
+                "source": "SQuAD-small.json",
+                "snippet": "The American Football Conference (AFC) champion Denver Broncos defeated the National Football Conference (NFC) champion Carolina Panthers 24\u201310 to earn their third Super Bowl title."
+              }
+            ],
+            "uncertainty": false,
+            "reasons": [
+              "The answer is completely supported by the context. The Denver Broncos represented the AFC at Super Bowl 50."
+            ]
+          },
+          "usage": {
+            "prompt_tokens": 1641,
+            "completion_tokens": 145,
+            "total_tokens": 1786,
+            "latency_ms": 1180.79,
+            "model_name": "gemini-2.0-flash"
+          }
+        },
+        "quality": {
+          "name": "quality",
+          "output": {
+            "score": 1.0,
+            "decision": "pass",
+            "error_type": "none",
+            "citations": [],
+            "uncertainty": false,
+            "reasons": [
+              "The answer is correct, relevant, complete, and concise."
+            ]
+          },
+          "usage": {
+            "prompt_tokens": 202,
+            "completion_tokens": 70,
+            "total_tokens": 272,
+            "latency_ms": 899.88,
+            "model_name": "gemini-2.0-flash"
+          }
+        }
+      }
+    },
+    {
+      "sample_id": "squad-56be4db0acb8001400a502ed",
+      "split": "dev",
+      "query": "Which NFL team represented the NFC at Super Bowl 50?",
+      "answer_metrics": {
+        "groundedness": 1.0,
+        "quality": 1.0,
+        "hallucination": false,
+        "uncertainty": false
+      },
+      "judge_outputs": {
+        "groundedness": {
+          "name": "groundedness",
+          "output": {
+            "score": 1.0,
+            "decision": "pass",
+            "error_type": "none",
+            "citations": [
+              {
+                "source": "SQuAD-small.json",
+                "snippet": "The American Football Conference (AFC) champion Denver Broncos defeated the National Football Conference (NFC) champion Carolina Panthers 24\u201310 to earn their third Super Bowl title."
+              },
+              {
+                "source": "SQuAD-small.json",
+                "snippet": "They defeated the Arizona Cardinals 49\u201315 in the NFC Championship Game and advanced to their second Super Bowl appearance since the franchise was founded in 1995."
+              },
+              {
+                "source": "SQuAD-small.json",
+                "snippet": "The Carolina Panthers became one of only ten teams to have completed a regular season with only one loss, and one of only six teams to have acquired a 15\u20131 record, while the Denver Broncos became one of four teams to have made eight appearances in the Super Bowl."
+              }
+            ],
+            "uncertainty": false,
+            "reasons": [
+              "The answer is completely supported by the context. The first document states that the Carolina Panthers represented the NFC at Super Bowl 50."
+            ]
+          },
+          "usage": {
+            "prompt_tokens": 1629,
+            "completion_tokens": 294,
+            "total_tokens": 1923,
+            "latency_ms": 2007.42,
+            "model_name": "gemini-2.0-flash"
+          }
+        },
+        "quality": {
+          "name": "quality",
+          "output": {
+            "score": 1.0,
+            "decision": "pass",
+            "error_type": "none",
+            "citations": [],
+            "uncertainty": false,
+            "reasons": [
+              "The answer is correct and directly answers the question."
+            ]
+          },
+          "usage": {
+            "prompt_tokens": 198,
+            "completion_tokens": 68,
+            "total_tokens": 266,
+            "latency_ms": 858.84,
+            "model_name": "gemini-2.0-flash"
+          }
+        }
+      }
+    }
+  ]
+}

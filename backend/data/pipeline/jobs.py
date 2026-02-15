@@ -19,6 +19,7 @@ from uuid import UUID
 from sqlmodel import Session, select
 from models_ingest import IngestJob
 from database import engine
+from data.pipeline.manager import IngestionCancelledError
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -140,6 +141,10 @@ class JobWorker:
             self._execute_job(job.id)
             self._complete_job(job.id, status="completed")
             return True
+        except IngestionCancelledError as e:
+            logger.info(f"🛑 Job {job.id} cancelled cooperatively: {e}")
+            self._complete_job(job.id, status="cancelled")
+            return True
         except Exception as e:
             logger.error(f"❌ Job {job.id} failed: {e}")
             self._complete_job(job.id, status="failed", error=str(e))
@@ -153,11 +158,13 @@ class JobWorker:
         """
         # Dynamic import to break potential cyclic dependency on startup
         from data.pipeline.manager import IngestionPipeline
-        
+
         # Helper to update heartbeat
         def heartbeat_callback():
             with Session(engine) as session:
                 j = session.get(IngestJob, job_id)
+                if j and j.status == "cancelled":
+                    raise IngestionCancelledError(f"Ingestion job {job_id} cancelled by user.")
                 if j and j.status == "processing":
                     j.lease_expires_at = datetime.utcnow() + timedelta(seconds=LEASE_DURATION_SECONDS)
                     session.add(j)

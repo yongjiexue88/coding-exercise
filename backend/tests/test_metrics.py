@@ -36,3 +36,25 @@ def test_compute_retrieval_metrics_from_chunk_refs():
     assert metrics.recall_at_k == 1.0
     assert metrics.mrr_at_k == 0.5
     assert metrics.ndcg_at_k > 0.0
+
+
+def test_recall_and_ndcg_with_duplicate_retrieval_ids_stay_bounded():
+    retrieved = ["docA", "docA", "docA", "docB", "docB"]
+    relevant = ["docA"]
+
+    recall = recall_at_k(retrieved, relevant, 5)
+    ndcg = ndcg_at_k(retrieved, relevant, 5, graded_relevance={"docA": 1.0})
+
+    assert 0.0 <= recall <= 1.0
+    assert recall == 1.0
+    assert 0.0 <= ndcg <= 1.0
+
+
+def test_compute_retrieval_metrics_deduplicates_retrieved_ids():
+    metrics = compute_retrieval_metrics(
+        retrieved_doc_ids=["doc1", "doc1", "doc2", "doc2", "doc3"],
+        gold_doc_ids=["doc2"],
+        gold_chunk_refs=[],
+        k=5,
+    )
+    assert metrics.retrieved_doc_ids == ["doc1", "doc2", "doc3"]

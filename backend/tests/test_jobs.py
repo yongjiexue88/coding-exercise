@@ -2,12 +2,15 @@
 
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from data.pipeline.manager import IngestionCancelledError
 from data.pipeline.jobs import JobManager, IngestJob
+from data.pipeline.jobs import JobWorker
 
 
 @patch("data.pipeline.jobs.Session")
@@ -61,3 +64,19 @@ def test_cancel_job_failure(mock_session_cls):
     assert result is False
     assert job.status == "completed"
     mock_session.commit.assert_not_called()
+
+
+@patch("data.pipeline.jobs.Session")
+def test_worker_marks_job_cancelled_on_cooperative_cancel(mock_session_cls):
+    mock_session = mock_session_cls.return_value.__enter__.return_value
+    job = IngestJob(id=uuid.uuid4(), status="pending", created_at=datetime.utcnow(), retry_count=0)
+    mock_session.exec.return_value.first.return_value = job
+
+    worker = JobWorker(worker_id="test-worker")
+
+    with patch.object(worker, "_execute_job", side_effect=IngestionCancelledError("cancelled")), \
+         patch.object(worker, "_complete_job") as complete_job:
+        processed = worker._process_next_job()
+
+    assert processed is True
+    complete_job.assert_called_once_with(job.id, status="cancelled")

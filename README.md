@@ -245,7 +245,10 @@ npm run dev
 | `POST` | `/query` | RAG query (JSON response) |
 | `POST` | `/query/stream` | RAG query (SSE streaming) |
 | `GET` | `/documents` | List indexed documents |
-| `POST` | `/ingest` | Ingest documents from disk |
+| `POST` | `/ingest` | Start async ingestion job |
+| `GET` | `/ingest/{job_id}` | Check ingestion job status |
+| `POST` | `/ingest/{job_id}/cancel` | Cancel ingestion (cooperative checkpoints) |
+| `POST` | `/ingest/{job_id}/retry` | Retry failed ingestion job |
 
 ### Example Query
 
@@ -285,9 +288,13 @@ python -m evaluation.runner --mode full_rag_with_judges --top-k 5 --limit 10
 
 # Run retrieval-only (faster, for experimenting with embeddings/chunking)
 python -m evaluation.runner --mode retrieval_only --top-k 5
+
+# Optional: run legacy/mixed benchmark explicitly
+python -m evaluation.runner --dataset evaluation/datasets/eval_v1.jsonl --mode retrieval_only --top-k 5
 ```
 
 > You can also use `python -m evaluation.evaluate ...`; both entrypoints call the same evaluation runner.
+> Default dataset now targets the active SQuAD ingestion path: `evaluation/datasets/eval_squad_v1.jsonl`.
 
 ### 2. Checking Quality Gates
 

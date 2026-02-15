@@ -1,0 +1,43 @@
+{
+  "run_id": "eval_20260215_231639_d2d044f5",
+  "mode": "full_rag_with_judges",
+  "summary": {
+    "avg_precision_at_k": 0.2,
+    "avg_recall_at_k": 1.0,
+    "avg_mrr_at_k": 1.0,
+    "avg_ndcg_at_k": 1.0,
+    "k": 5
+  },
+  "results": [
+    {
+      "sample_id": "squad-56be4db0acb8001400a502ec",
+      "split": "dev",
+      "query": "Which NFL team represented the AFC at Super Bowl 50?",
+      "retrieval": {
+        "k": 5,
+        "precision_at_k": 0.2,
+        "recall_at_k": 1.0,
+        "mrr_at_k": 1.0,
+        "ndcg_at_k": 1.0,
+        "retrieved_doc_ids": [
+          "SQuAD-small.json"
+        ]
+      }
+    },
+    {
+      "sample_id": "squad-56be4db0acb8001400a502ed",
+      "split": "dev",
+      "query": "Which NFL team represented the NFC at Super Bowl 50?",
+      "retrieval": {
+        "k": 5,
+        "precision_at_k": 0.2,
+        "recall_at_k": 1.0,
+        "mrr_at_k": 1.0,
+        "ndcg_at_k": 1.0,
+        "retrieved_doc_ids": [
+          "SQuAD-small.json"
+        ]
+      }
+    }
+  ]
+}
